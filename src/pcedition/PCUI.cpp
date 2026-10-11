@@ -134,7 +134,7 @@ namespace pce::UI
 						s.push_back(c);
 					}
 					ti.first = s.empty() ? 0 : (uint16)s[0];
-					ti.text = Utf16ToUtf8(s);
+					ti.text = Prompts::GuideToEnglish(Utf16ToUtf8(s)); // guide texts are matched in English
 					std::lock_guard lock(sMutex);
 					if (sTexts.size() > 30000)
 						sTexts.clear();
@@ -426,6 +426,37 @@ namespace pce::UI
 					}
 				}
 			}
+			hCPU->instructionPointer = hCPU->spr.LR;
+		}
+
+		// ---- temperature unit (U-King v1.5.0) ----
+		// The game shows degrees Fahrenheit when its region language is USen (1; the ids go JPja, USen, USes, USfr, EUde,
+		// EUen = 5, ...). Two places ask for the region language because of that (see the patch): the conversion of the
+		// temperature for the map, and the code that sets a layout's "RegionLanguageType" animation to the region
+		// language. Ten layouts have such an animation; for two of them frame 1 is the Fahrenheit variant: the
+		// temperature of the map (PaAppMapTemp2_00: unit symbol) and the temperature gauge of the HUD (PaTempMeter_00).
+		// Their part panes are named "Pa_Temp*" (layout + 0x0C = part pane). For a forced unit these two get USen, or
+		// EUen in place of USen (same arrangement, Celsius); every other layout keeps the real region language (clock
+		// format, text arrangement).
+		void HLE_RegionLanguage(PPCInterpreter_t* hCPU)
+		{
+			uint32 language = hCPU->gpr[3];
+			const uint32 layout = hCPU->gpr[4];
+			bool temperature = layout == 0;
+			if (layout && ValidPtr(layout, 0x10))
+			{
+				const uint32 part = memory_readU32(layout + 0x0C);
+				temperature = PaneOk(part) && ReadName(part).rfind("Pa_Temp", 0) == 0;
+			}
+			if (temperature)
+			{
+				const int unit = GetSettings().temperatureUnit;
+				if (unit == 2)
+					language = 1;
+				else if (unit == 1 && language == 1)
+					language = 5;
+			}
+			hCPU->gpr[3] = language;
 			hCPU->instructionPointer = hCPU->spr.LR;
 		}
 
@@ -1667,6 +1698,7 @@ namespace pce::UI
 		osLib_addFunction("coreinit", "PCE_MapObj", HLE_MapObj);
 		osLib_addFunction("coreinit", "PCE_CursorTick", HLE_CursorTick);
 		osLib_addFunction("coreinit", "PCE_ListTick", HLE_ListTick);
+		osLib_addFunction("coreinit", "PCE_RegionLanguage", HLE_RegionLanguage);
 	}
 
 	std::atomic<uint64> sComputeTotalUs{0}, sComputeCount{0}, sComputeMaxUs{0};

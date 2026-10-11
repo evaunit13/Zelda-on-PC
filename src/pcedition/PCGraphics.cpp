@@ -289,6 +289,33 @@ bl import.coreinit.PCE_ListTick
 mtlr r12
 blr
 
+; temperature unit. The game shows Fahrenheit when its region language (0x030ADCF0) is USen (1). Two places ask:
+; the conversion for the map (0x0307BE74: x * 1.8 + 32), and the code that sets the frame of a layout's
+; "RegionLanguageType" animation (0x03A2F870, r30 = layout: unit symbol of the map, temperature gauge of the HUD).
+; Both get the answer of PCE_RegionLanguage(r3 = region language, r4 = layout or 0).
+_pceRegionLanguageLayout:
+stwu r1, -0x10(r1)
+mflr r0
+stw r0, 0x14(r1)
+bl 0x030ADCF0
+mr r4, r30
+bl import.coreinit.PCE_RegionLanguage
+lwz r0, 0x14(r1)
+mtlr r0
+addi r1, r1, 0x10
+blr
+_pceRegionLanguageTemp:
+stwu r1, -0x10(r1)
+mflr r0
+stw r0, 0x14(r1)
+bl 0x030ADCF0
+li r4, 0
+bl import.coreinit.PCE_RegionLanguage
+lwz r0, 0x14(r1)
+mtlr r0
+addi r1, r1, 0x10
+blr
+
 ; inventory page carousel: the scroll offset (screen+0x1B98) snaps to its target instead of easing,
 ; so a page / category change is applied in a single frame (replaces bl ease(r3, r4 = &offset, f1 = target, ...))
 _pceSlideSnap:
@@ -301,6 +328,8 @@ blr
 0x02F033E0 = bla _pceMapObj
 0x03A2E8E4 = bla _pceCursorTick
 0x02E816E8 = bla _pceListTick
+0x03A2FB5C = bla _pceRegionLanguageLayout
+0x0307BE94 = bla _pceRegionLanguageTemp
 0x02CB7004 = bla _pceGlideTick
 0x02FF64CC = bla _pceSlideSnap
 )";

@@ -52,6 +52,16 @@ namespace pce
 	// names the file ReadGameFile would return, with its size (for caches); empty if there is none
 	std::string GameFileStamp(std::string_view rel);
 	bool IsGameAvailable();
+
+	// Text languages the player's copy of the game has (it brings one message pack per language: the European copy
+	// seven, the American three, the Japanese one). The game shows the one the console is set to.
+	struct GameLanguage
+	{
+		const char* code; // settings value ("en", "fr", ...)
+		const char* name; // English name
+		int console;      // CafeConsoleLanguage
+	};
+	std::vector<GameLanguage> GetGameLanguages();
 	uint32 GetUpdateVersion();     // title version of the update that was found (0 if none)
 
 	// fatal startup error shown in a minimal native message box (only used if the game cannot start at all)

@@ -1,4 +1,6 @@
 #include "pcedition/PCPrompts.h"
+#include <functional>
+#include <set>
 #include "pcedition/PCEdition.h"
 
 #include <fstream>
@@ -266,6 +268,128 @@ namespace pce::Prompts
 			return nullptr;
 		}
 
+		// ---- the game's guide texts in English (see PCPrompts.h) ----
+		std::unordered_map<std::string, std::string> sGuideEnglish; // text in the game's language -> English
+
+		// a file of the dump's content folder (the update's version if it has one)
+		bool ReadDumpFile(const std::string& rel, std::vector<uint8>& out)
+		{
+			return ReadGameFile("content/" + rel, out);
+		}
+
+		// Messages of a MSBT (big endian): label -> plain text (inline tags removed, UTF-8). `keep` filters by label / text.
+		void MsbtTexts(const std::vector<uint8>& d, const std::string& prefix, const std::function<bool(const std::string&, const std::string&)>& keep,
+					   std::unordered_map<std::string, std::string>& out)
+		{
+			if (d.size() < 0x30 || memcmp(d.data(), "MsgStdBn", 8) != 0 || d[8] != 0xFE || d[9] != 0xFF)
+				return;
+			const uint8 *labels = nullptr, *texts = nullptr;
+			uint32 labelsSize = 0, textsSize = 0;
+			size_t off = 0x20;
+			for (uint32 i = 0, n = RB16(d.data() + 0x0E); i < n && off + 0x10 <= d.size(); i++)
+			{
+				const uint32 size = RB32(d.data() + off + 4);
+				if (off + 0x10 + size > d.size())
+					return;
+				if (memcmp(d.data() + off, "LBL1", 4) == 0)
+				{
+					labels = d.data() + off + 0x10;
+					labelsSize = size;
+				}
+				else if (memcmp(d.data() + off, "TXT2", 4) == 0)
+				{
+					texts = d.data() + off + 0x10;
+					textsSize = size;
+				}
+				off = (off + 0x10 + size + 0x0F) & ~(size_t)0x0F;
+			}
+			if (!labels || !texts || labelsSize < 4 || textsSize < 4)
+				return;
+			const uint32 textCount = RB32(texts);
+			auto textOf = [&](uint32 index) {
+				std::string o;
+				if (index >= textCount || 4 + (index + 1) * 4 > textsSize)
+					return o;
+				const uint32 begin = RB32(texts + 4 + index * 4), end = index + 1 < textCount ? RB32(texts + 4 + (index + 1) * 4) : textsSize;
+				for (uint32 p = begin; p + 1 < end && p + 1 < textsSize; p += 2)
+				{
+					const uint32 c = RB16(texts + p);
+					if (c == 0)
+						break;
+					if (c == 0x0E) // inline tag: group, type, parameter size, parameters
+					{
+						if (p + 7 < textsSize)
+							p += 6 + RB16(texts + p + 6);
+						continue;
+					}
+					if (c == 0x0F) // end tag: group, type
+					{
+						p += 4;
+						continue;
+					}
+					if (c < 0x80)
+						o.push_back((char)c);
+					else if (c < 0x800)
+					{
+						o.push_back((char)(0xC0 | (c >> 6)));
+						o.push_back((char)(0x80 | (c & 0x3F)));
+					}
+					else
+					{
+						o.push_back((char)(0xE0 | (c >> 12)));
+						o.push_back((char)(0x80 | ((c >> 6) & 0x3F)));
+						o.push_back((char)(0x80 | (c & 0x3F)));
+					}
+				}
+				return o;
+			};
+			const uint32 slots = RB32(labels);
+			for (uint32 s = 0; s < slots && 4 + (s + 1) * 8 <= labelsSize; s++)
+			{
+				const uint32 count = RB32(labels + 4 + s * 8);
+				uint32 p = RB32(labels + 8 + s * 8);
+				for (uint32 k = 0; k < count && p < labelsSize; k++)
+				{
+					const uint32 len = labels[p];
+					if (p + 1 + len + 4 > labelsSize)
+						return;
+					const std::string label = prefix + std::string((const char*)labels + p + 1, len);
+					const std::string text = textOf(RB32(labels + p + 1 + len));
+					if (keep(label, text))
+						out[label] = text;
+					p += 1 + len + 4;
+				}
+			}
+		}
+
+		// all messages of one language that pass the filter: Pack/Bootup_<region><language>.pack holds
+		// Message/Msg_<region><language>.product.ssarc, an archive of MSBT files
+		bool LoadMessages(const std::string& language, const std::function<bool(const std::string&, const std::string&)>& keep,
+						  std::unordered_map<std::string, std::string>& out)
+		{
+			for (const char* region : {"EU", "US", "JP"})
+			{
+				std::vector<uint8> raw, pack, msg;
+				std::vector<SarcFile> files, msbts;
+				uint32 hashKey = 0;
+				if (!ReadDumpFile(fmt::format("Pack/Bootup_{}{}.pack", region, language), raw))
+					continue;
+				if (!SarcRead(Yaz0Decode(raw, pack) ? pack : raw, files, hashKey))
+					continue;
+				for (const SarcFile& file : files)
+				{
+					if (file.name != fmt::format("Message/Msg_{}{}.product.ssarc", region, language))
+						continue;
+					if (!SarcRead(Yaz0Decode(file.data, msg) ? msg : file.data, msbts, hashKey))
+						return false;
+					for (const SarcFile& m : msbts)
+						MsbtTexts(m.data, m.name + "|", keep, out);
+					return true;
+				}
+			}
+			return false;
+		}
+
 		std::string BindingStamp(const Settings& s)
 		{
 			std::ostringstream o;
@@ -346,6 +470,33 @@ namespace pce::Prompts
 	bool Active()
 	{
 		return sActive;
+	}
+
+	void LoadGuideLanguage()
+	{
+		sGuideEnglish.clear();
+		const std::string language = GetSettings().language;
+		if (language.empty() || language == "en")
+			return;
+		// every text the PC layer looks for (PCInput, PCMenus, PCUI)
+		static const std::set<std::string> kTexts = {"Place pin", "Throw", "Quit",  "Cancel", "Detonate", "Let go", "Skip", "Dash",
+													 "Push",      "Pull",  "Far",   "Near",   "Jump",     "Save",   "Load"};
+		std::unordered_map<std::string, std::string> english, local;
+		const bool ok = LoadMessages("en", [&](const std::string&, const std::string& text) { return kTexts.count(text) != 0; }, english) &&
+						LoadMessages(language, [&](const std::string& label, const std::string&) { return english.count(label) != 0; }, local);
+		for (const auto& [label, text] : local)
+		{
+			if (!text.empty() && text != english[label])
+				sGuideEnglish.emplace(text, english[label]);
+		}
+		cemuLog_log(LogType::Force, "PCE: text language {}: {} guide texts known ({})", language, sGuideEnglish.size(),
+					ok ? "from the message packs of the dump" : "message packs not found, context controls expect English");
+	}
+
+	const std::string& GuideToEnglish(const std::string& text)
+	{
+		const auto it = sGuideEnglish.find(text);
+		return it == sGuideEnglish.end() ? text : it->second;
 	}
 
 	void Prepare(const fs::path& packDir)

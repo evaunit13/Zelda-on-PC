@@ -210,6 +210,9 @@ namespace pce
 			Get(m, "Graphics", "CPUPinning", s.cpuPinning);
 			Get(m, "Display", "Fullscreen", s.fullscreen);
 			Get(m, "Game", "Path", s.gamePath);
+			Get(m, "Game", "Language", s.language);
+			Get(m, "Game", "TemperatureUnit", s.temperatureUnit);
+			s.temperatureUnit = std::clamp(s.temperatureUnit, 0, 2);
 			for (size_t i = 0; i < kActionCount; i++)
 			{
 				std::string v;
@@ -277,7 +280,9 @@ namespace pce
 		o << "[Display]\n";
 		o << "Fullscreen=" << b(s.fullscreen) << "\n\n";
 		o << "[Game]\n";
-		o << "Path=" << s.gamePath << "\n\n";
+		o << "Path=" << s.gamePath << "\n";
+		o << "Language=" << s.language << "\n";
+		o << "TemperatureUnit=" << s.temperatureUnit << "\n\n";
 		o << "[Controls]\n";
 		for (size_t i = 0; i < kActionCount; i++)
 		{

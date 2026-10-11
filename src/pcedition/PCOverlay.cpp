@@ -95,6 +95,8 @@ namespace pce::Overlay
 		bool sConfirmQuit = false;
 		bool sMouseWasDown = false;
 		int sFpsIndex = 1;
+		int sLanguageIndex = 0; // into sLanguages
+		std::vector<GameLanguage> sLanguages;
 		const int kFpsValues[] = {30, 60, 90, 120, 144, 165, 240};
 
 		double Now()
@@ -226,6 +228,19 @@ namespace pce::Overlay
 					SetOpen(false);
 					Menus::RequestLoad();
 				}));
+				if (sLanguages.size() > 1)
+				{
+					std::vector<std::string> names;
+					for (const GameLanguage& l : sLanguages)
+						names.emplace_back(l.name);
+					p.items.push_back(choice("Language", &sLanguageIndex, names,
+											 "Language of the game's texts (the languages your copy of the game has). The voices are chosen in the game's own "
+											 "Options on the title screen. Applied on next launch.",
+											 true));
+				}
+				p.items.push_back(choice("Temperature Unit", &sEdit.temperatureUnit, {"Automatic", "Celsius", "Fahrenheit"},
+										 "Unit of the temperature on the map. Automatic: as the game decides (Fahrenheit for US English, Celsius "
+										 "otherwise)."));
 				p.items.push_back(button("Quit to Desktop", "Unsaved progress since the last save will be lost.", []() { sConfirmQuit = true; }));
 				pages.push_back(std::move(p));
 			}
@@ -300,6 +315,8 @@ namespace pce::Overlay
 				return;
 			}
 			sEdit.fpsLimit = kFpsValues[std::clamp(sFpsIndex, 0, (int)std::size(kFpsValues) - 1)];
+			if (!sLanguages.empty())
+				sEdit.language = sLanguages[std::clamp(sLanguageIndex, 0, (int)sLanguages.size() - 1)].code;
 			Commit();
 			if (it.restart)
 				Toast("This change takes effect the next time the game starts");
@@ -409,6 +426,11 @@ namespace pce::Overlay
 			for (int i = 0; i < (int)std::size(kFpsValues); i++)
 				if (sEdit.fpsLimit >= kFpsValues[i])
 					sFpsIndex = i;
+			sLanguages = GetGameLanguages();
+			sLanguageIndex = 0;
+			for (int i = 0; i < (int)sLanguages.size(); i++)
+				if (sEdit.language == sLanguages[i].code)
+					sLanguageIndex = i;
 			sPages = BuildPages();
 			sRebinding = false;
 			sConfirmQuit = false;

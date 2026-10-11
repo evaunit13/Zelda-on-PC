@@ -125,6 +125,10 @@ namespace pce
 		// paths
 		std::string gamePath;               // folder containing the base game (auto-detected if empty)
 
+		// game
+		std::string language = "en";        // text language (code of pce::GetGameLanguages), applied when the game starts
+		int temperatureUnit = 0;            // 0 as the game decides (Fahrenheit for US English), 1 Celsius, 2 Fahrenheit
+
 		std::array<Binding, kActionCount> bindings;
 
 		Binding& bind(Action a) { return bindings[(size_t)a]; }

@@ -44,4 +44,10 @@ namespace pce::Prompts
 
 	// true once the prompt font is installed for this session (substitution only makes sense then)
 	bool Active();
+
+	// The PC layer recognises situations by the texts of the game's own action guides and buttons ("Dash", "Let go",
+	// "Cancel", "Save", ...), in English. With another text language (Settings::language) those texts are translated
+	// back: the dump has one message pack per language, and a message has the same file and label in all of them.
+	void LoadGuideLanguage();                                // once at startup, after the game was located
+	const std::string& GuideToEnglish(const std::string& text); // the English text of a guide, or the text itself
 }

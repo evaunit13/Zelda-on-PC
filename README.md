@@ -80,6 +80,8 @@ glyphs are drawn for this project in the style of the game.
 - Resolution from 720p to 4K, frame rate limits from 30 to 240 FPS with corrected game speed and physics, shadows,
   anti-aliasing, V-Sync.
 - Inventory, map and Adventure Log open directly on their page (`Tab` / `I`, `M`, `J`).
+- **Language and units:** the text language is picked from the ones your copy of the game has, and the temperature
+  can be shown in Celsius or Fahrenheit whatever the region of the game is.
 - Your existing Cemu save is **copied** on the first start. Cemu itself is never changed.
 - The window and the shortcuts carry the game's own icon. It is made on your PC from the icon inside your dump; this
   project ships none of the game's artwork.

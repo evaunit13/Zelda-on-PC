@@ -4,6 +4,7 @@
 #include "pcedition/PCGraphics.h"
 #include "pcedition/PCDevBridge.h"
 #include "pcedition/PCUI.h"
+#include "pcedition/PCPrompts.h"
 #include "pcedition/PCIcon.h"
 
 #include <windows.h>
@@ -342,7 +343,13 @@ namespace pce
 			c.vk_accurate_barriers = true;
 			c.play_boot_sound = false;
 			c.disable_screensaver = true;
+			// the game shows its texts in the language of the console
 			c.console_language = CafeConsoleLanguage::EN;
+			for (const GameLanguage& l : GetGameLanguages())
+			{
+				if (GetSettings().language == l.code)
+					c.console_language = (CafeConsoleLanguage)l.console;
+			}
 			c.overlay.position = ScreenPosition::kDisabled;
 			c.notification.position = ScreenPosition::kDisabled;
 			c.notification.controller_profiles = false;
@@ -466,6 +473,7 @@ namespace pce
 		ImportExistingSave();
 		Input::RegisterHLE();
 		UI::RegisterHLE();
+		Prompts::LoadGuideLanguage();
 		Graphics::PrepareGraphicPacks();
 	}
 
@@ -540,6 +548,35 @@ namespace pce
 	uint32 GetUpdateVersion()
 	{
 		return sUpdateVersion;
+	}
+
+	std::vector<GameLanguage> GetGameLanguages()
+	{
+		struct Known
+		{
+			GameLanguage language;
+			std::initializer_list<const char*> packs; // content/Pack/Bootup_<pack>.pack
+		};
+		static const Known kKnown[] = {
+			{{"en", "English", (int)CafeConsoleLanguage::EN}, {"EUen", "USen"}}, {{"fr", "French", (int)CafeConsoleLanguage::FR}, {"EUfr", "USfr"}},
+			{{"de", "German", (int)CafeConsoleLanguage::DE}, {"EUde"}},          {{"es", "Spanish", (int)CafeConsoleLanguage::ES}, {"EUes", "USes"}},
+			{{"it", "Italian", (int)CafeConsoleLanguage::IT}, {"EUit"}},         {{"nl", "Dutch", (int)CafeConsoleLanguage::NL}, {"EUnl"}},
+			{{"ru", "Russian", (int)CafeConsoleLanguage::RU}, {"EUru"}},         {{"ja", "Japanese", (int)CafeConsoleLanguage::JA}, {"JPja"}},
+		};
+		std::vector<GameLanguage> r;
+		std::error_code ec;
+		for (const Known& k : kKnown)
+		{
+			for (const char* pack : k.packs)
+			{
+				if (!GameFileStamp(fmt::format("content/Pack/Bootup_{}.pack", pack)).empty())
+				{
+					r.push_back(k.language);
+					break;
+				}
+			}
+		}
+		return r;
 	}
 
 	bool IsGameAvailable()
