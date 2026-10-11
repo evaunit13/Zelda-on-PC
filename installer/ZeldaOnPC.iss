@@ -1,7 +1,8 @@
 ; Zelda on PC - Windows installer (Inno Setup 6.3 or newer).
 ;
 ; Built by tools\package.ps1, which stages the files (executable, FSR 3 runtime, fonts, community graphic packs) and
-; then compiles this script. The installer asks for the folder with the player's own game dump and writes it to
+; then compiles this script. The installer asks for the folder with the player's own game dump (title folders or a
+; .wua archive; archives are checked by the program itself, ZeldaOnPC.exe --check-game) and writes it to
 ; settings.ini; it contains no game files. The shortcuts get the game's own icon, which the installed program makes
 ; on the spot from the icon inside that dump (data\game.ico); without it they show the icon of the executable.
 ;
@@ -12,7 +13,7 @@
 #define AppExe "ZeldaOnPC.exe"
 #define ShortcutComment "The Legend of Zelda: Breath of the Wild on PC"
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+  #define AppVersion "1.1.0"
 #endif
 #ifndef StageDir
   #define StageDir "..\build\stage"
@@ -172,9 +173,9 @@ begin
   end;
 end;
 
-{ Looks for the base game, the update and the DLC the way the game does at startup: anywhere below the folder, or
-  next to it when the base game folder itself was selected. False if the base game is not there. }
-function LocateGame(const Dir: String): Boolean;
+{ Looks for the base game, the update and the DLC as title folders the way the game does at startup: anywhere below
+  the folder, or next to it when the base game folder itself was selected. False if the base game is not there. }
+function LocateFolders(const Dir: String): Boolean;
 var
   Titles: TStringList;
   I, P: Integer;
@@ -217,6 +218,64 @@ begin
   Result := FoundBase <> '';
 end;
 
+{ A Wii U archive (.wua): the path itself, or a file directly in the folder. }
+function HasArchive(const Dir: String): Boolean;
+var
+  FindRec: TFindRec;
+begin
+  Result := (CompareText(ExtractFileExt(Dir), '.wua') = 0) and FileExists(Dir);
+  if not Result and DirExists(Dir) and FindFirst(AddBackslash(Dir) + '*.wua', FindRec) then
+  begin
+    Result := True;
+    FindClose(FindRec);
+  end;
+end;
+
+{ Asks the program itself what it finds (it reads archives too): ZeldaOnPC.exe --check-game answers with a set of
+  bits, 1 base game, 2 update, 4 the update is 1.5.0, 8 DLC. The executable is unpacked to the temporary folder. }
+function LocateWithProgram(const Dir: String): Boolean;
+var
+  Arg: String;
+  ResultCode: Integer;
+begin
+  Result := False;
+  FoundBase := '';
+  FoundUpdate := '';
+  FoundDlc := '';
+  FoundUpdateVersion := 0;
+  Arg := Dir;
+  if (Arg <> '') and (Arg[Length(Arg)] = '\') then
+    Arg := Arg + '\';
+  try
+    ExtractTemporaryFile('{#AppExe}');
+  except
+    Exit;
+  end;
+  if not Exec(ExpandConstant('{tmp}\{#AppExe}'), '--check-game "' + Arg + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
+    Exit;
+  if (ResultCode <= 0) or (ResultCode > 15) or (ResultCode and 1 = 0) then
+    Exit;
+  FoundBase := Dir;
+  if ResultCode and 2 <> 0 then
+    FoundUpdate := Dir;
+  if ResultCode and 4 <> 0 then
+    FoundUpdateVersion := RequiredUpdateVersion
+  else if ResultCode and 2 <> 0 then
+    FoundUpdateVersion := -1;
+  if ResultCode and 8 <> 0 then
+    FoundDlc := Dir;
+  Result := True;
+end;
+
+{ Title folders are checked here; for anything else (an archive, a layout only the program knows) the program is
+  asked. Thorough: ask it even when no archive is in sight. }
+function LocateGame(const Dir: String; Thorough: Boolean): Boolean;
+begin
+  Result := LocateFolders(Dir);
+  if not Result and (Thorough or HasArchive(Dir)) then
+    Result := LocateWithProgram(Dir);
+end;
+
 { First game folder of an existing Cemu installation that holds the game ('' if there is none). }
 function CemuGamePath: String;
 var
@@ -242,7 +301,7 @@ begin
     Entry := Copy(Xml, P + 7, E - P - 7);
     StringChangeEx(Entry, '&amp;', '&', True);
     Delete(Xml, 1, E + 7);
-    if LocateGame(Entry) then
+    if LocateGame(Entry, False) then
     begin
       Result := Entry;
       Break;
@@ -257,8 +316,8 @@ begin
   GamePage := CreateInputDirPage(wpSelectDir, 'Game files',
     'Where is your copy of The Legend of Zelda: Breath of the Wild?',
     'Select the folder that holds your own dump of the game (Wii U version): the base game, the update 1.5.0 and, ' +
-    'if you have it, the DLC, each as a folder with "code", "content" and "meta" inside.' + #13#10#13#10 +
-    'You can select the folder that contains all of them, or the base game folder itself.',
+    'if you have it, the DLC. They can be folders with "code", "content" and "meta" inside, or a .wua archive.' + #13#10#13#10 +
+    'You can select the folder that contains them, or the base game folder itself.',
     False, '');
   GamePage.Add('');
   Dir := ExpandConstant('{param:GAMEDIR|}');
@@ -293,14 +352,14 @@ begin
     end;
     Exit;
   end;
-  if not LocateGame(Dir) then
+  if not LocateGame(Dir, True) then
     Result := SuppressibleMsgBox('The game was not found in this folder.' + #13#10#13#10 +
-      'It has to contain the base game as a folder with "code", "content" and "meta" inside (directly, or up to ' +
-      'three levels below). Packed formats (.wua, .wud, .wux) are not supported.' + #13#10#13#10 +
+      'It has to contain the base game as a folder with "code", "content" and "meta" inside, or as a .wua archive ' +
+      '(directly, or up to three levels below). Disc images (.wud, .wux) are not supported.' + #13#10#13#10 +
       'Use this folder anyway?', mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDYES) = IDYES
   else if FoundUpdateVersion <> RequiredUpdateVersion then
     Result := SuppressibleMsgBox('The base game was found, but not the update 1.5.0, which is required.' + #13#10#13#10 +
-      'Put your dumped update folder next to the base game folder. An update installed in Cemu is found too.' + #13#10#13#10 +
+      'Put your dumped update next to the base game. An update installed in Cemu is found too.' + #13#10#13#10 +
       'Continue?', mbConfirmation, MB_YESNO, IDYES) = IDYES;
 end;
 
@@ -315,6 +374,8 @@ begin
       Result := Result + Space + 'Update: not found here' + NewLine
     else if FoundUpdateVersion = RequiredUpdateVersion then
       Result := Result + Space + 'Update: 1.5.0' + NewLine
+    else if FoundUpdateVersion < 0 then
+      Result := Result + Space + 'Update: an older version (1.5.0 is required)' + NewLine
     else
       Result := Result + Space + 'Update: version ' + IntToStr(FoundUpdateVersion) + ' (1.5.0 is required)' + NewLine;
     if FoundDlc = '' then

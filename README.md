@@ -51,6 +51,7 @@ HUD**, so the interface is drawn on top at full sharpness instead of being inter
   scope, while climbing and in conversations.
 - **Every action rebindable**, two keys per action, with conflict highlighting.
 - **Weapons on the mouse wheel**, arrows while aiming. Hold `1` – `4` for the weapon, bow, shield and rune selectors.
+- **Toggle modes** for sprint and for lock on / shield, for everyone who cannot or does not want to hold a key down.
 - Perfect guard with the attack button while the shield is up, flurry rush with mouse clicks, the jump key closes and
   reopens the paraglider.
 - **Motion control shrines with the mouse**: `T` tilts the virtual GamePad.
@@ -87,20 +88,21 @@ glyphs are drawn for this project in the style of the game.
 
 - Windows 10 or 11, 64-bit.
 - A graphics card with Vulkan support. What runs Breath of the Wild well in Cemu runs it well here.
-- Your own dump of **The Legend of Zelda: Breath of the Wild** for Wii U, as folders that contain `code`, `content`
-  and `meta` (the format [Dumpling](https://github.com/emiyl/dumpling) writes):
+- Your own dump of **The Legend of Zelda: Breath of the Wild** for Wii U, either as folders that contain `code`,
+  `content` and `meta` (the format [Dumpling](https://github.com/emiyl/dumpling) writes) or as a `.wua` archive (the
+  format Cemu converts to):
   - the base game: Europe, Americas or Japan
   - the **update 1.5.0** (required)
   - the DLC (optional)
 
-Packed formats (`.wua`, `.wud`, `.wux`) are not supported.
+Disc images (`.wud`, `.wux`) are not supported.
 
 ## Install
 
 1. Download `ZeldaOnPC-Setup-x.y.z.exe` from the [Releases](../../releases) page, or build it yourself (below).
 2. Run it. It asks where to install and **where your game dump is**. Select the folder that holds the base game, the
-   update and the DLC, or the base game folder itself; the update and DLC are found next to it or in an existing Cemu
-   installation.
+   update and the DLC (or your `.wua` file), or the base game folder itself; the update and DLC are found next to it
+   or in an existing Cemu installation.
 3. Start **Zelda on PC** from the Start menu, or from the desktop shortcut if you kept it ticked.
 
 The installer needs no administrator rights and copies nothing from your game folder. Saves and settings live next to
@@ -144,10 +146,10 @@ powershell -ExecutionPolicy Bypass -File tools\package.ps1
 - `tools\build.cmd` configures and builds `bin\ZeldaOnPC_release.exe`. The first run builds the dependencies through
   vcpkg and takes a while.
 - `tools\package.ps1` fetches the two community graphic packs the graphics settings build on, stages the files into
-  `build\stage` and compiles `installer\output\ZeldaOnPC-Setup-1.0.0.exe`. `build\stage` is also a complete portable
+  `build\stage` and compiles `installer\output\ZeldaOnPC-Setup-<version>.exe`. `build\stage` is also a complete portable
   copy.
 
-To run straight from the build folder, tell it where the game is in `bin\settings.ini`:
+To run straight from the build folder, tell it where the game is (a folder or a `.wua` file) in `bin\settings.ini`:
 
 ```ini
 [Game]

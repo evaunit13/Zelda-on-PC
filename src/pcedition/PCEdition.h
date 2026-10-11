@@ -17,6 +17,8 @@ namespace pce
 	// Command line tools that do their job and end the process without starting the game. Returns the exit code, or
 	// nothing if the command line asks for none of them.
 	//   --extract-icon <game folder> <out.ico>   used by the installer: icon for the shortcuts (see PCIcon.h)
+	//   --check-game <game folder>               used by the installer: what is in that folder. The exit code is a
+	//                                            set of bits: 1 base game, 2 update, 4 the update is 1.5.0, 8 DLC
 	std::optional<int> RunCommandLineTool(const std::vector<std::wstring>& args);
 	bool IsActive();   // PC Edition mode (kiosk, native input, ...)
 	bool IsDevMode();
@@ -35,13 +37,20 @@ namespace pce
 	void InitAfterWindow(void* mainHwnd);
 	void Shutdown();
 
-	// game location: the player's own dump as loose title folders (code / content / meta). The base game, the update and
-	// the DLC may sit anywhere below the configured folder, next to the base game folder, or in the title folder of an
-	// existing Cemu installation.
-	fs::path GetGameRoot();        // configured folder
-	fs::path GetBaseTitlePath();   // base game title folder
-	fs::path GetUpdateTitlePath(); // update title folder (empty if not found)
-	fs::path GetAocTitlePath();    // DLC title folder (empty if not found)
+	// game location: the player's own dump, as title folders (code / content / meta) or as a Wii U archive (.wua, which
+	// usually holds base game, update and DLC in one file). The titles may sit anywhere below the configured folder,
+	// next to the base game, or in the title folder of an existing Cemu installation.
+	fs::path GetGameRoot();        // configured folder (or .wua file)
+	fs::path GetBaseTitlePath();   // base game: title folder, or the archive that holds it (what Cemu is told to launch)
+	fs::path GetUpdateTitlePath(); // update: title folder or archive (empty if not found)
+	fs::path GetAocTitlePath();    // DLC: title folder or archive (empty if not found)
+	// archives that have to be made known to Cemu's title list before the launch (update / DLC in an archive)
+	std::vector<fs::path> GetGameArchives();
+	// A file of the game the way the console sees it: from the update if it has the file, else from the base game.
+	// `rel` is relative to the title ("content/Font/Font_EU.sbfarc"). Works for title folders and archives.
+	bool ReadGameFile(std::string_view rel, std::vector<uint8>& out);
+	// names the file ReadGameFile would return, with its size (for caches); empty if there is none
+	std::string GameFileStamp(std::string_view rel);
 	bool IsGameAvailable();
 	uint32 GetUpdateVersion();     // title version of the update that was found (0 if none)
 

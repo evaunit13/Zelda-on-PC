@@ -9,9 +9,9 @@
 
 namespace pce::Icon
 {
-	// Writes a multi-size .ico (rounded corners, thin outline) from <baseTitle>/meta/iconTex.tga. False if the dump has
-	// no usable icon or the file cannot be written.
-	bool WriteFromDump(const fs::path& baseTitle, const fs::path& icoPath);
+	// Writes a multi-size .ico (rounded corners, thin outline) from the contents of the dump's meta/iconTex.tga. False
+	// if that is no usable picture or the file cannot be written.
+	bool WriteFromTga(const std::vector<uint8>& tga, const fs::path& icoPath);
 	// Puts the icon file on a top level window. False if the file cannot be loaded.
 	bool ApplyToWindow(void* hwnd, const fs::path& icoPath);
 }

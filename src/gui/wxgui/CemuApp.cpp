@@ -375,8 +375,9 @@ bool CemuApp::OnInit()
 		if (!pce::IsGameAvailable())
 		{
 			pce::FatalError("Your copy of The Legend of Zelda: Breath of the Wild could not be found.\n\n"
-							"Run the installer again and select the folder that holds your game dump (base game, update 1.5.0 and DLC as "
-							"folders with code / content / meta), or set it in settings.ini next to the executable:\n\n[Game]\nPath=...");
+							"Run the installer again and select the folder that holds your game dump (base game, update 1.5.0 and DLC, as "
+							"folders with code / content / meta or as a .wua archive), or set it in settings.ini next to the "
+							"executable:\n\n[Game]\nPath=...");
 			exit(0);
 		}
 		if (pce::GetUpdateVersion() != pce::kRequiredUpdateVersion)

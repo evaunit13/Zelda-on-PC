@@ -39,6 +39,7 @@ target_link_libraries(CemuPCEdition PRIVATE
 	CemuUtil
 	imguiImpl
 	pugixml::pugixml
+	ZArchive::zarchive
 	Boost::headers
 	ws2_32
 )

@@ -10,6 +10,7 @@
 #include <shlobj.h>
 #include <boost/algorithm/string.hpp>
 #include <pugixml.hpp>
+#include <zarchive/zarchivereader.h>
 
 #include "config/ActiveSettings.h"
 #include "config/CemuConfig.h"
@@ -23,7 +24,81 @@ namespace pce
 		bool sForceWindowed = false;
 		fs::path sExeDir;
 		fs::path sGameRoot;
-		fs::path sBasePath, sUpdatePath, sAocPath;
+
+		// A title of the game: a folder with code / content / meta, or such a folder inside a Wii U archive (.wua). An
+		// archive holds one folder per title in its root, named <title id>_v<version>.
+		struct GameTitle
+		{
+			uint64 titleId = 0;
+			uint32 version = 0;
+			fs::path path;       // title folder, or the archive file
+			std::string subPath; // folder of the title inside the archive (empty for a title folder)
+			bool empty() const { return path.empty(); }
+			std::string describe() const { return subPath.empty() ? _pathToUtf8(path) : _pathToUtf8(path) + " [" + subPath + "]"; }
+		};
+		GameTitle sBase, sUpdate, sAoc;
+
+		// archives that are in use stay open (their file table is large)
+		std::mutex sArchiveMutex;
+		std::map<fs::path, std::unique_ptr<ZArchiveReader>> sArchives;
+
+		bool IsArchive(const fs::path& p)
+		{
+			std::error_code ec;
+			return boost::iequals(_pathToUtf8(p.extension()), ".wua") && fs::is_regular_file(p, ec);
+		}
+
+		bool ReadArchiveFile(ZArchiveReader* zar, const std::string& path, std::vector<uint8>& out)
+		{
+			const ZArchiveNodeHandle node = zar->LookUp(path, true, false);
+			if (node == ZARCHIVE_INVALID_NODE)
+				return false;
+			const uint64 size = zar->GetFileSize(node);
+			if (size > 0x10000000ull)
+				return false;
+			out.resize((size_t)size);
+			return zar->ReadFromFile(node, 0, size, out.data()) == size;
+		}
+
+		// size of a file of a title, -1 if the title does not have it
+		sint64 TitleFileSize(const GameTitle& t, std::string_view rel)
+		{
+			if (t.empty())
+				return -1;
+			std::error_code ec;
+			if (t.subPath.empty())
+			{
+				const uint64 size = fs::file_size(t.path / _utf8ToPath(rel), ec);
+				return ec ? -1 : (sint64)size;
+			}
+			std::lock_guard lock(sArchiveMutex);
+			auto& zar = sArchives[t.path];
+			if (!zar)
+				zar.reset(ZArchiveReader::OpenFromFile(t.path));
+			if (!zar)
+				return -1;
+			const ZArchiveNodeHandle node = zar->LookUp(t.subPath + "/" + std::string(rel), true, false);
+			return node == ZARCHIVE_INVALID_NODE ? -1 : (sint64)zar->GetFileSize(node);
+		}
+
+		bool ReadTitleFile(const GameTitle& t, std::string_view rel, std::vector<uint8>& out)
+		{
+			if (t.empty())
+				return false;
+			if (t.subPath.empty())
+			{
+				std::ifstream f(t.path / _utf8ToPath(rel), std::ios::binary);
+				if (!f)
+					return false;
+				out.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+				return true;
+			}
+			std::lock_guard lock(sArchiveMutex);
+			auto& zar = sArchives[t.path];
+			if (!zar)
+				zar.reset(ZArchiveReader::OpenFromFile(t.path));
+			return zar && ReadArchiveFile(zar.get(), t.subPath + "/" + std::string(rel), out);
+		}
 		uint32 sRegion = 0;        // low half of the title id (0x101C9500 Europe, 0x101C9400 Americas, 0x101C9300 Japan)
 		uint32 sUpdateVersion = 0;
 
@@ -44,27 +119,15 @@ namespace pce
 			return r;
 		}
 
-		struct LooseTitle
+		// title id and title version from the contents of a code/app.xml
+		bool ParseAppXml(const void* data, size_t size, GameTitle& t)
 		{
-			uint64 titleId = 0;
-			uint32 version = 0;
-			fs::path path;
-		};
-
-		// read <code/app.xml> (title id, title version) of a loose title folder
-		std::optional<LooseTitle> ReadLooseTitle(const fs::path& titleDir)
-		{
-			std::error_code ec;
-			fs::path appXml = titleDir / "code" / "app.xml";
-			if (!fs::exists(appXml, ec))
-				return std::nullopt;
 			pugi::xml_document doc;
-			if (!doc.load_file(appXml.c_str()))
-				return std::nullopt;
+			if (!doc.load_buffer(data, size))
+				return false;
 			auto node = doc.child("app").child("title_id");
 			if (!node)
-				return std::nullopt;
-			LooseTitle t;
+				return false;
 			try
 			{
 				t.titleId = std::stoull(node.text().as_string(), nullptr, 16);
@@ -72,16 +135,60 @@ namespace pce
 			}
 			catch (const std::exception&)
 			{
-				return std::nullopt;
+				return false;
 			}
+			return true;
+		}
+
+		// a title folder (code/app.xml tells which title it is)
+		std::optional<GameTitle> ReadLooseTitle(const fs::path& titleDir)
+		{
+			std::ifstream f(titleDir / "code" / "app.xml", std::ios::binary);
+			if (!f)
+				return std::nullopt;
+			const std::vector<char> xml((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+			GameTitle t;
+			if (!ParseAppXml(xml.data(), xml.size(), t))
+				return std::nullopt;
 			t.path = titleDir;
 			return t;
 		}
 
-		// collect the game's title folders below a folder (limited depth; title folders are not searched further)
-		void CollectTitles(const fs::path& dir, int depth, std::vector<LooseTitle>& out)
+		// the game's titles inside a Wii U archive
+		void CollectArchiveTitles(const fs::path& file, std::vector<GameTitle>& out)
+		{
+			std::unique_ptr<ZArchiveReader> zar(ZArchiveReader::OpenFromFile(file));
+			if (!zar)
+				return;
+			const ZArchiveNodeHandle root = zar->LookUp("", false, true);
+			if (root == ZARCHIVE_INVALID_NODE)
+				return;
+			for (uint32 i = 0; i < zar->GetDirEntryCount(root); i++)
+			{
+				ZArchiveReader::DirEntry e;
+				if (!zar->GetDirEntry(root, i, e) || !e.isDirectory)
+					continue;
+				GameTitle t;
+				std::vector<uint8> xml;
+				if (!ReadArchiveFile(zar.get(), std::string(e.name) + "/code/app.xml", xml) || !ParseAppXml(xml.data(), xml.size(), t))
+					continue;
+				t.path = file;
+				t.subPath = e.name;
+				if (IsGameRegion((uint32)t.titleId))
+					out.push_back(t);
+			}
+		}
+
+		// collect the game's titles below a folder (limited depth; title folders are not searched further). The folder
+		// may also be an archive file itself.
+		void CollectTitles(const fs::path& dir, int depth, std::vector<GameTitle>& out)
 		{
 			std::error_code ec;
+			if (IsArchive(dir))
+			{
+				CollectArchiveTitles(dir, out);
+				return;
+			}
 			if (!fs::is_directory(dir, ec))
 				return;
 			if (auto t = ReadLooseTitle(dir))
@@ -94,7 +201,7 @@ namespace pce
 				return;
 			for (auto& e : fs::directory_iterator(dir, ec))
 			{
-				if (e.is_directory(ec))
+				if (e.is_directory(ec) || IsArchive(e.path()))
 					CollectTitles(e.path(), depth - 1, out);
 			}
 		}
@@ -116,12 +223,12 @@ namespace pce
 		// locate base game, update and DLC starting from a folder. False if the base game is not there.
 		bool LocateGame(const fs::path& root)
 		{
-			std::vector<LooseTitle> titles;
+			std::vector<GameTitle> titles;
 			CollectTitles(root, 3, titles);
-			// the base game folder itself was given: update and DLC are usually right next to it
-			if (ReadLooseTitle(root))
+			// the base game itself was given (folder or archive): update and DLC are usually right next to it
+			if (ReadLooseTitle(root) || IsArchive(root))
 				CollectTitles(root.parent_path(), 1, titles);
-			const LooseTitle* base = nullptr;
+			const GameTitle* base = nullptr;
 			for (auto& t : titles)
 			{
 				if ((uint32)(t.titleId >> 32) == kHighBase)
@@ -140,7 +247,7 @@ namespace pce
 				if (auto t = ReadLooseTitle(cemuTitles / fmt::format("{:08x}", high) / fmt::format("{:08x}", region)))
 					titles.push_back(*t);
 			}
-			auto find = [&](uint32 high) -> const LooseTitle* {
+			auto find = [&](uint32 high) -> const GameTitle* {
 				for (auto& t : titles)
 				{
 					if ((uint32)(t.titleId >> 32) == high && (uint32)t.titleId == region)
@@ -148,19 +255,38 @@ namespace pce
 				}
 				return nullptr;
 			};
-			sBasePath = base->path;
+			sBase = *base;
 			sRegion = region;
-			sUpdatePath.clear();
-			sAocPath.clear();
+			sUpdate = {};
+			sAoc = {};
 			sUpdateVersion = 0;
 			if (auto u = find(kHighUpdate))
 			{
-				sUpdatePath = u->path;
+				sUpdate = *u;
 				sUpdateVersion = u->version;
 			}
 			if (auto a = find(kHighAoc))
-				sAocPath = a->path;
+				sAoc = *a;
 			return true;
+		}
+
+		// The update as a source of files. An update that is installed in our own title folder is used as well.
+		GameTitle UpdateForFiles()
+		{
+			if (!sUpdate.empty())
+				return sUpdate;
+			GameTitle t;
+			std::error_code ec;
+			for (const char* region : {"101c9500", "101c9400", "101c9300"})
+			{
+				const fs::path p = GetDataDir() / "mlc01" / "usr" / "title" / "0005000e" / region;
+				if (fs::exists(p / "content" / "Font", ec))
+				{
+					t.path = p;
+					break;
+				}
+			}
+			return t;
 		}
 
 		std::vector<fs::path> CandidateGameRoots()
@@ -228,12 +354,13 @@ namespace pce
 			c.fullscreen_scaling = kKeepAspectRatio;
 			c.crash_dump = CrashDump::Disabled;
 			c.account.legacy_online_enabled = false;
-			// Cemu's title list gets exactly the game's own title folders (nothing else is scanned)
+			// Cemu's title list gets exactly the game's own title folders (nothing else is scanned). Titles in an archive
+			// are registered at launch (GetGameArchives).
 			c.game_paths.clear();
-			for (const fs::path* p : {&sBasePath, &sUpdatePath, &sAocPath})
+			for (const GameTitle* t : {&sBase, &sUpdate, &sAoc})
 			{
-				if (!p->empty())
-					c.game_paths.emplace_back(_pathToUtf8(*p));
+				if (!t->empty() && t->subPath.empty())
+					c.game_paths.emplace_back(_pathToUtf8(t->path));
 			}
 			Settings s = GetSettings();
 			c.vsync = s.vsync ? 1 : 0;
@@ -262,7 +389,16 @@ namespace pce
 				continue;
 			if (i + 2 >= args.size())
 				return 2;
-			return LocateGame(fs::path(args[i + 1])) && Icon::WriteFromDump(sBasePath, fs::path(args[i + 2])) ? 0 : 1;
+			std::vector<uint8> tga;
+			return LocateGame(fs::path(args[i + 1])) && ReadTitleFile(sBase, "meta/iconTex.tga", tga) && Icon::WriteFromTga(tga, fs::path(args[i + 2])) ? 0 : 1;
+		}
+		for (size_t i = 0; i < args.size(); i++)
+		{
+			if (!boost::iequals(args[i], L"--check-game"))
+				continue;
+			if (i + 1 >= args.size() || !LocateGame(fs::path(args[i + 1])))
+				return 0;
+			return 1 | (sUpdate.empty() ? 0 : 2) | (sUpdateVersion == kRequiredUpdateVersion ? 4 : 0) | (sAoc.empty() ? 0 : 8);
 		}
 		return std::nullopt;
 	}
@@ -316,13 +452,13 @@ namespace pce
 		}
 		if (!sGameRoot.empty())
 		{
-			cemuLog_log(LogType::Force, "PCE: game found at {} (update: {}, version {}; DLC: {})", _pathToUtf8(sBasePath),
-						sUpdatePath.empty() ? "not found" : _pathToUtf8(sUpdatePath), sUpdateVersion, sAocPath.empty() ? "not found" : _pathToUtf8(sAocPath));
+			cemuLog_log(LogType::Force, "PCE: game found at {} (update: {}, version {}; DLC: {})", sBase.describe(),
+						sUpdate.empty() ? "not found" : sUpdate.describe(), sUpdateVersion, sAoc.empty() ? "not found" : sAoc.describe());
 			UpdateSettings([&](Settings& s) { if (s.gamePath.empty()) s.gamePath = _pathToUtf8(sGameRoot); });
 			// window / shortcut icon: made here from the dump's own icon, never shipped (the installer usually wrote it)
 			std::error_code ec;
-			if (!fs::exists(GetDataDir() / "game.ico", ec))
-				Icon::WriteFromDump(sBasePath, GetDataDir() / "game.ico");
+			if (std::vector<uint8> tga; !fs::exists(GetDataDir() / "game.ico", ec) && ReadTitleFile(sBase, "meta/iconTex.tga", tga))
+				Icon::WriteFromTga(tga, GetDataDir() / "game.ico");
 		}
 		else
 			cemuLog_log(LogType::Force, "PCE: game not found");
@@ -360,17 +496,45 @@ namespace pce
 
 	fs::path GetBaseTitlePath()
 	{
-		return sBasePath;
+		return sBase.path;
 	}
 
 	fs::path GetUpdateTitlePath()
 	{
-		return sUpdatePath;
+		return sUpdate.path;
 	}
 
 	fs::path GetAocTitlePath()
 	{
-		return sAocPath;
+		return sAoc.path;
+	}
+
+	std::vector<fs::path> GetGameArchives()
+	{
+		std::vector<fs::path> r;
+		for (const GameTitle* t : {&sUpdate, &sAoc})
+		{
+			if (!t->empty() && !t->subPath.empty() && std::find(r.begin(), r.end(), t->path) == r.end())
+				r.push_back(t->path);
+		}
+		return r;
+	}
+
+	bool ReadGameFile(std::string_view rel, std::vector<uint8>& out)
+	{
+		const GameTitle update = UpdateForFiles();
+		return (TitleFileSize(update, rel) >= 0 && ReadTitleFile(update, rel, out)) || ReadTitleFile(sBase, rel, out);
+	}
+
+	std::string GameFileStamp(std::string_view rel)
+	{
+		const GameTitle update = UpdateForFiles();
+		for (const GameTitle* t : std::initializer_list<const GameTitle*>{&update, &sBase})
+		{
+			if (const sint64 size = TitleFileSize(*t, rel); size >= 0)
+				return fmt::format("{}/{}:{}", t->describe(), rel, size);
+		}
+		return {};
 	}
 
 	uint32 GetUpdateVersion()
@@ -380,7 +544,7 @@ namespace pce
 
 	bool IsGameAvailable()
 	{
-		return !sBasePath.empty();
+		return !sBase.empty();
 	}
 
 	void FatalError(const std::string& message)

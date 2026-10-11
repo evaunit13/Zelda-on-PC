@@ -266,20 +266,6 @@ namespace pce::Prompts
 			return nullptr;
 		}
 
-		fs::path FindUpdateContent()
-		{
-			std::error_code ec;
-			if (const fs::path update = GetUpdateTitlePath(); !update.empty())
-				return update / "content";
-			for (const char* region : {"101c9500", "101c9400", "101c9300"})
-			{
-				const fs::path p = GetDataDir() / "mlc01" / "usr" / "title" / "0005000e" / region / "content";
-				if (fs::exists(p / "Font", ec))
-					return p;
-			}
-			return {};
-		}
-
 		std::string BindingStamp(const Settings& s)
 		{
 			std::ostringstream o;
@@ -365,18 +351,11 @@ namespace pce::Prompts
 	void Prepare(const fs::path& packDir)
 	{
 		std::error_code ec;
-		const fs::path base = GetBaseTitlePath() / "content";
-		const fs::path upd = FindUpdateContent();
-		auto pick = [&](const fs::path& rel) {
-			if (!upd.empty() && fs::exists(upd / rel, ec))
-				return upd / rel;
-			return base / rel;
-		};
 		// the font archive is named after the region of the game
 		std::string fontName = "Font_EU";
 		for (const char* n : {"Font_EU", "Font_US", "Font_JP"})
 		{
-			if (fs::exists(pick(fs::path("Font") / (std::string(n) + ".sbfarc")), ec))
+			if (!GameFileStamp(fmt::format("content/Font/{}.sbfarc", n)).empty())
 			{
 				fontName = n;
 				break;
@@ -395,14 +374,14 @@ namespace pce::Prompts
 		}
 		ParseTemplateCmap();
 
-		const fs::path fontSrc = pick(fs::path("Font") / (fontName + ".sbfarc"));
-		const fs::path rstbSrc = pick("System/Resource/ResourceSizeTable.product.srsizetable");
+		// both files come from the player's dump (title folders or archive; the update has them)
+		const std::string fontSrc = fmt::format("content/Font/{}.sbfarc", fontName);
+		const std::string rstbSrc = "content/System/Resource/ResourceSizeTable.product.srsizetable";
 
 		// cache: rebuild only when the bindings, the template or the source files changed
 		std::ostringstream st;
-		st << "v1|" << sTemplate.size() << "|" << Crc32(std::string_view((const char*)sTemplate.data(), sTemplate.size())) << "|"
-		   << _pathToUtf8(fontSrc) << "|" << fs::file_size(fontSrc, ec) << "|" << _pathToUtf8(rstbSrc) << "|"
-		   << fs::file_size(rstbSrc, ec) << "|" << BindingStamp(s);
+		st << "v2|" << sTemplate.size() << "|" << Crc32(std::string_view((const char*)sTemplate.data(), sTemplate.size())) << "|"
+		   << GameFileStamp(fontSrc) << "|" << GameFileStamp(rstbSrc) << "|" << BindingStamp(s);
 		const std::string stamp = st.str();
 		{
 			std::vector<uint8> old;
@@ -417,10 +396,10 @@ namespace pce::Prompts
 		std::vector<uint8> raw, sarc, rstbRaw, rstb;
 		std::vector<SarcFile> files;
 		uint32 hashKey = 0x65;
-		if (!ReadFile(fontSrc, raw) || !Yaz0Decode(raw, sarc) || !SarcRead(sarc, files, hashKey) ||
-			!ReadFile(rstbSrc, rstbRaw) || !Yaz0Decode(rstbRaw, rstb) || rstb.size() < 12 || memcmp(rstb.data(), "RSTB", 4) != 0)
+		if (!ReadGameFile(fontSrc, raw) || !Yaz0Decode(raw, sarc) || !SarcRead(sarc, files, hashKey) ||
+			!ReadGameFile(rstbSrc, rstbRaw) || !Yaz0Decode(rstbRaw, rstb) || rstb.size() < 12 || memcmp(rstb.data(), "RSTB", 4) != 0)
 		{
-			cemuLog_log(LogType::Force, "PCE prompts: could not read {} / {}", _pathToUtf8(fontSrc), _pathToUtf8(rstbSrc));
+			cemuLog_log(LogType::Force, "PCE prompts: could not read {} / {}", fontSrc, rstbSrc);
 			return;
 		}
 		const uint32 yazAlign = RB32(raw.data() + 8);
@@ -448,7 +427,7 @@ namespace pce::Prompts
 			}
 		if (!replaced)
 		{
-			cemuLog_log(LogType::Force, "PCE prompts: External_00.bffnt not found in {}", _pathToUtf8(fontSrc));
+			cemuLog_log(LogType::Force, "PCE prompts: External_00.bffnt not found in {}", fontSrc);
 			return;
 		}
 		const std::vector<uint8> newSarc = SarcWrite(files, hashKey, 0x2000);

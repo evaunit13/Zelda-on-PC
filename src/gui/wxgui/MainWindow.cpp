@@ -526,6 +526,15 @@ bool MainWindow::FileLoad(const fs::path launchPath, wxLaunchGameEvent::INITIATE
 	{
 		// the title might not be in the TitleList, so we add it as a temporary entry
 		CafeTitleList::AddTitleFromPath(launchPath);
+		// PC Edition: update / DLC that sit in another archive than the base game
+		if (pce::IsActive())
+		{
+			for (const fs::path& archive : pce::GetGameArchives())
+			{
+				if (archive != launchPath)
+					CafeTitleList::AddTitleFromPath(archive);
+			}
+		}
 		// title is valid, launch from TitleId
 		TitleId baseTitleId;
 		if (!CafeTitleList::FindBaseTitleId(launchTitle.GetAppTitleId(), baseTitleId))

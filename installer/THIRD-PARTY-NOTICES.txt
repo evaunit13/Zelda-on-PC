@@ -35,7 +35,7 @@ Dear ImGui
     https://github.com/ocornut/imgui
 
 Cemu is linked with further open source libraries, among them wxWidgets, SDL, Boost, {fmt}, pugixml, glslang,
-zlib, zstd, OpenSSL, libcurl, cubeb, libusb, hidapi and RapidJSON. The complete list with their versions is in
+zlib, zstd, ZArchive, OpenSSL, libcurl, cubeb, libusb, hidapi and RapidJSON. The complete list with their versions is in
 vcpkg.json and in the dependencies folder of the source repository.
 
 "The Legend of Zelda" and "Breath of the Wild" are trademarks of Nintendo. "Wii U" is a trademark of Nintendo.

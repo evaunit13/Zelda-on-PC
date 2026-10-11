@@ -14,12 +14,8 @@ namespace pce::Icon
 		};
 
 		// uncompressed true colour TGA (what the Wii U meta folder holds): 24 or 32 bit
-		bool ReadTga(const fs::path& path, Image& img)
+		bool ReadTga(const std::vector<uint8>& d, Image& img)
 		{
-			std::ifstream f(path, std::ios::binary);
-			if (!f)
-				return false;
-			std::vector<uint8> d((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 			if (d.size() < 18 || d[1] != 0 || d[2] != 2)
 				return false;
 			const int w = d[12] | (d[13] << 8), h = d[14] | (d[15] << 8), bpp = d[16];
@@ -135,10 +131,10 @@ namespace pce::Icon
 		}
 	}
 
-	bool WriteFromDump(const fs::path& baseTitle, const fs::path& icoPath)
+	bool WriteFromTga(const std::vector<uint8>& tga, const fs::path& icoPath)
 	{
 		Image src;
-		if (baseTitle.empty() || !ReadTga(baseTitle / "meta" / "iconTex.tga", src))
+		if (!ReadTga(tga, src))
 			return false;
 		static const int kSizes[] = {256, 128, 96, 64, 48, 40, 32, 24, 20, 16};
 		const size_t count = std::size(kSizes);

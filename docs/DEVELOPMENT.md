@@ -19,7 +19,7 @@ number of hooks in the emulator. This page says where things are and how to work
 
 | File | Role |
 |---|---|
-| `PCEdition` | Startup: command line, paths, finding the game dump, forcing Cemu's configuration, save import. |
+| `PCEdition` | Startup: command line, paths, finding the game dump (title folders or `.wua`) and reading files from it, forcing Cemu's configuration, save import. |
 | `PCSettings` | `settings.ini`, key bindings. |
 | `PCInput` | Raw Input thread; serves the game's `VPADRead` directly; camera, motion (tilt) and context logic. |
 | `PCCamera` | Mouse to stick conversion for the camera modes without a direct hook. |
@@ -61,11 +61,11 @@ Output: `bin\ZeldaOnPC_release.exe`. It runs from `bin` once `bin\settings.ini` 
 (`[Game]` / `Path=`), or when an existing Cemu installation already knows it.
 
 ```bat
-powershell -ExecutionPolicy Bypass -File tools\package.ps1 -Version 1.0.0
+powershell -ExecutionPolicy Bypass -File tools\package.ps1 -Version 1.1.0
 ```
 
-stages the files in `build\stage` and builds `installer\output\ZeldaOnPC-Setup-1.0.0.exe`. Silent installation for
-tests: `ZeldaOnPC-Setup-1.0.0.exe /VERYSILENT /GAMEDIR="D:\Games\BotW" /DIR="D:\Test"`.
+stages the files in `build\stage` and builds `installer\output\ZeldaOnPC-Setup-1.1.0.exe`. Silent installation for
+tests: `ZeldaOnPC-Setup-1.1.0.exe /VERYSILENT /GAMEDIR="D:\Games\BotW" /DIR="D:\Test"`.
 
 Regenerating the art (Python 3 with Pillow and NumPy):
 
@@ -85,6 +85,7 @@ shows the icon of the player's own dump (`PCIcon`).
 | `--cemu-ui` | Plain Cemu interface (game list, debugger, graphic pack window) instead of the kiosk mode. |
 | `--pce-dev` | Developer mode: separate state in `data_dev` (never touches the player's saves), verbose log, developer bridge. |
 | `--extract-icon <game folder> <out.ico>` | Writes the game's icon from a dump and exits (used by the installer for the shortcuts). |
+| `--check-game <game folder>` | Exits with what it finds there, as bits: 1 base game, 2 update, 4 the update is 1.5.0, 8 DLC (used by the installer; this is how it understands `.wua` archives). |
 
 ## Developer mode
 
