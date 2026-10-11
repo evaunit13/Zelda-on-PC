@@ -198,19 +198,55 @@ namespace pce::UI
 		//            +0x1C control state ([+0x20] bit 1 = takes input), +0x50 entry list (first node +0x54, node
 		//            offset +0x5C), +0x95 / +0x96 state (shown: +0x96 == 2 and +0x95 >= 0)
 		//   entry    +0x04 next node, +0x08 owner control, +0x0C screen
-		//   owner    +0x1E flags (0x10 = can be selected), +0x38 pane (global matrix: translation at +0x54 / +0x64)
+		//   owner    +0x1E flags (0x10 = can be selected), +0x38 pane (global matrix: translation at +0x54 / +0x64).
+		//            The pane is the hit pane ("B_Hit_00") of the part the pointer knows as a target.
+		// Screens use the same request slot themselves (0x03A2EEE4). Lists (the quests of the adventure log, the armour
+		// list of a Great Fairy) keep their own current row and request its entry in every frame: a request of ours is
+		// overruled one frame later, the cursor flickers between the two rows and plays its sound each time. Such
+		// screens are left alone (the request slot is already taken when our hook runs) and are driven with the d-pad,
+		// which moves the list's own row.
 		struct FocusRequest
 		{
+			uint32 part = 0;
 			Rect area{};
 			uint32 frame = 0xF0000000;
-			int result = 0; // 0 not looked at yet, 1 entry found, 2 nothing selectable in the area
+			int result = 0; // 0 not looked at yet, 1 requested, 2 no selectable entry, 3 already focused
 		};
 		std::mutex sFocusMutex;
 		FocusRequest sFocusReq;
-		std::atomic<uint32> sCursorMgr{0}, sCursorFrame{0xF0000000}, sCursorRequested{0};
+		std::atomic<uint32> sCursorMgr{0}, sCursorFrame{0xF0000000}, sCursorRequested{0}, sCursorOwnedFrame{0xF0000000};
 
-		// selectable entry of the shown menus that lies inside the area (the one nearest to its centre)
-		uint32 FindCursorEntry(uint32 mgr, const Rect& area)
+		// levels between a pane and a part pane above it (0 = the pane itself), -1 if the part is not above it
+		int LevelsBelow(uint32 pane, uint32 part)
+		{
+			for (int up = 0; up < 4 && PaneOk(pane); up++)
+			{
+				if (pane == part)
+					return up;
+				pane = memory_readU32(pane + kParent);
+			}
+			return -1;
+		}
+
+		// pane of the entry the game's cursor is on; 0 while the cursor is not running
+		uint32 CursorFocusPane()
+		{
+			const uint32 mgr = sCursorMgr.load();
+			if (Input::GetDebug().frameCounter.load() - sCursorFrame.load() > 3 || !ValidPtr(mgr, 0x30))
+				return 0;
+			const uint32 focus = memory_readU32(mgr + 0x24);
+			if (!ValidPtr(focus, 0x30))
+				return 0;
+			const uint32 owner = memory_readU32(focus + 0x08);
+			if (!ValidPtr(owner, 0x3C))
+				return 0;
+			const uint32 pane = memory_readU32(owner + 0x38);
+			return PaneOk(pane) ? pane : 0;
+		}
+
+		// selectable entry of the shown menus that belongs to the part (its hit pane lies below the part pane); for a
+		// target without such an entry, the one that lies inside the area (nearest to its centre)
+		uint32 FindCursorEntry(uint32 mgr, uint32 part, const Rect& area)
 		{
 			const uint32 control = memory_readU32(mgr + 0x0C);
 			if (!ValidPtr(control, 0x50))
@@ -225,8 +261,9 @@ namespace pce::UI
 			const uint32 screens = memory_readU32(list + 0x18), freeFlags = memory_readU32(list + 0x20);
 			if (!count || !ValidPtr(screens, count * 4) || !ValidPtr(freeFlags, count))
 				return 0;
-			uint32 best = 0;
+			uint32 best = 0, bestOwn = 0;
 			float bestDist = 1e9f;
+			int bestLevels = 99;
 			for (uint32 i = 0; i < count; i++)
 			{
 				if (memory_readU8(freeFlags + i) & 0x80)
@@ -250,6 +287,12 @@ namespace pce::UI
 					const uint32 pane = memory_readU32(owner + 0x38);
 					if (!PaneOk(pane))
 						continue;
+					const int levels = part ? LevelsBelow(pane, part) : -1;
+					if (levels >= 0 && levels < bestLevels)
+					{
+						bestLevels = levels;
+						bestOwn = entry;
+					}
 					const float x = 0.5f + RF(pane + 0x54) / kLayoutW, y = 0.5f - RF(pane + 0x64) / kLayoutH;
 					if (!area.Contains(x, y))
 						continue;
@@ -261,7 +304,7 @@ namespace pce::UI
 					}
 				}
 			}
-			return best;
+			return bestOwn ? bestOwn : best;
 		}
 
 		void HLE_CursorTick(PPCInterpreter_t* hCPU)
@@ -272,12 +315,17 @@ namespace pce::UI
 			sCursorFrame = frame;
 			if (ValidPtr(mgr, 0x30))
 			{
+				// the shown screen asked for an entry itself: it moves the cursor on its own (see above)
+				const uint32 pending = memory_readU32(mgr + 0x28);
+				if (pending != 0 && pending != sCursorRequested.load())
+					sCursorOwnedFrame = frame;
 				std::lock_guard lock(sFocusMutex);
-				if (frame - sFocusReq.frame <= 2)
+				if (frame - sFocusReq.frame <= 2 && frame - sCursorOwnedFrame.load() > 8)
 				{
-					const uint32 entry = FindCursorEntry(mgr, sFocusReq.area);
-					sFocusReq.result = entry ? 1 : 2;
-					if (entry && entry != memory_readU32(mgr + 0x24))
+					const uint32 entry = FindCursorEntry(mgr, sFocusReq.part, sFocusReq.area);
+					const bool focused = entry && entry == memory_readU32(mgr + 0x24);
+					sFocusReq.result = !entry ? 2 : focused ? 3 : 1;
+					if (entry && !focused)
 					{
 						memory_writeU32(mgr + 0x28, entry);
 						sCursorRequested = entry;
@@ -1156,6 +1204,20 @@ namespace pce::UI
 					ps.currentTab = k;
 				ps.questTabs |= pi.questTab;
 			}
+			// the target the game's own cursor is on: its entry's hit pane lies below the target's part pane
+			uint32 pane = CursorFocusPane();
+			for (int up = 0; up < 4 && PaneOk(pane) && ps.gameSel < 0; up++)
+			{
+				for (int i = 0; i < (int)ps.targets.size(); i++)
+				{
+					if (ps.targets[i].part == pane)
+					{
+						ps.gameSel = i;
+						break;
+					}
+				}
+				pane = memory_readU32(pane + kParent);
+			}
 		}
 	}
 
@@ -1245,17 +1307,17 @@ namespace pce::UI
 		return fmt::format("fade {:.2f} | queue {} prompts {}", sFadeNow.load(), sHudQueue.size(), sHudPrompts.size());
 	}
 
-	bool RequestFocus(const Rect& area, uint32 frame)
+	FocusResult RequestFocus(uint32 part, const Rect& area, uint32 frame)
 	{
 		std::lock_guard lock(sFocusMutex);
-		const Rect& o = sFocusReq.area;
-		const bool same = frame - sFocusReq.frame <= 4 &&
-						  std::fabs(o.x0 - area.x0) + std::fabs(o.y0 - area.y0) + std::fabs(o.x1 - area.x1) + std::fabs(o.y1 - area.y1) < 0.002f;
-		if (!same)
+		if (frame - sFocusReq.frame > 4 || sFocusReq.part != part)
 			sFocusReq.result = 0;
+		sFocusReq.part = part;
 		sFocusReq.area = area;
 		sFocusReq.frame = frame;
-		return frame - sCursorFrame.load() <= 3 && sFocusReq.result != 2;
+		if (frame - sCursorFrame.load() > 3 || frame - sCursorOwnedFrame.load() <= 8 || sFocusReq.result == 2)
+			return FocusResult::Unavailable;
+		return sFocusReq.result == 3 ? FocusResult::Focused : FocusResult::Requested;
 	}
 
 	std::string CursorInfo()
@@ -1263,8 +1325,8 @@ namespace pce::UI
 		const uint32 frame = Input::GetDebug().frameCounter.load();
 		const uint32 mgr = sCursorMgr.load();
 		std::lock_guard lock(sFocusMutex);
-		std::string r = fmt::format("mgr={:08x} age={} req_age={} req_result={} requested={:08x}", mgr, frame - sCursorFrame.load(), frame - sFocusReq.frame,
-									sFocusReq.result, sCursorRequested.load());
+		std::string r = fmt::format("mgr={:08x} age={} req_age={} req_result={} requested={:08x} owned_age={}", mgr, frame - sCursorFrame.load(),
+									frame - sFocusReq.frame, sFocusReq.result, sCursorRequested.load(), frame - sCursorOwnedFrame.load());
 		if (ValidPtr(mgr, 0x30))
 		{
 			const uint32 focus = memory_readU32(mgr + 0x24);
@@ -1348,6 +1410,8 @@ namespace pce::UI
 	{
 		if (targets.empty())
 			return -1;
+		if (gameSel >= 0)
+			return gameSel; // the game's own cursor says so
 		if (hasBoxCursor)
 		{
 			// the box cursor snaps onto the selected entry's bounding pane

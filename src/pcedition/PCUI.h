@@ -89,6 +89,7 @@ namespace pce::UI
 		int tabCount = 0;             // category tabs (inventory, adventure log), enabled ones only
 		int currentTab = -1;          // highlighted category
 		bool questTabs = false;       // the tabs are the quest categories of the adventure log
+		int gameSel = -1;             // target the game's own menu cursor is on (-1: cursor not running / not on a target)
 		bool pageArrow[2] = {false, false}; // inventory: "<" / ">" next to the item grid is shown (a page lies that way)
 		Rect pageArrowRect[2]{};
 		int Selected() const;         // index of the selected target or -1
@@ -97,10 +98,16 @@ namespace pce::UI
 		int FindLabel(std::string_view label) const;
 	};
 	const PointerSnapshot& GetPointer(uint32 frame);
-	// Put the menu selection box on the entry that lies inside this area. The game's own cursor update applies the
-	// request in its next run, exactly like a cursor move of the player. Returns false while that is not possible (no
-	// cursor update running, or nothing selectable was found there): the caller steps with the d-pad then.
-	bool RequestFocus(const Rect& area, uint32 frame);
+	// Put the menu selection box on the entry of a target (its part pane, or the entry that lies inside the area). The
+	// game's own cursor update applies the request in its next run, exactly like a cursor move of the player.
+	enum class FocusResult
+	{
+		Unavailable, // not possible: no cursor update running, the shown screen moves the cursor itself (lists do, every
+					 // frame), or the target has no selectable entry. The caller steps with the d-pad instead.
+		Requested,   // handed to the game
+		Focused      // the game's cursor is on that entry
+	};
+	FocusResult RequestFocus(uint32 part, const Rect& area, uint32 frame);
 	// diagnostics: state of the game's cursor manager
 	std::string CursorInfo();
 	// HUD action buttons drawn by the overlay in place of the hidden GamePad artwork (rect normalized, glyph = prompt code)

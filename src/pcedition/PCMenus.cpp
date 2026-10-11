@@ -46,6 +46,9 @@ namespace pce::Menus
 		// direct focus (UI::RequestFocus) of the wanted entry: which one and since when
 		uint32 sFocusPart = 0, sFocusSince = 0;
 		bool sHoverChase = false; // the hovered entry is not selected yet
+		// The entry that was selected by hovering. It is not selected a second time while the mouse stays on it: the
+		// keyboard (or the game) may move the selection away, and hovering must never fight with either.
+		uint32 sHoverDonePart = 0;
 
 		// inventory categories (switched with the right stick)
 		int sTabTarget = -1;
@@ -377,6 +380,7 @@ namespace pce::Menus
 			sTabSteps = 0;
 			sTabPhase = 0;
 			sHoverChase = false;
+			sHoverDonePart = 0;
 			io.holdAdd |= sNav.Step() | sConfirm.Step();
 			return;
 		}
@@ -394,7 +398,11 @@ namespace pce::Menus
 		{
 			io.consumeMouseButtons = true;
 			if (std::fabs(io.mouseX - sLastMx) + std::fabs(io.mouseY - sLastMy) > 0.002f)
+			{
+				if (io.frame - sLastMouseMoveFrame >= 20)
+					sHoverDonePart = 0; // the mouse moves again after a rest: hovering selects again
 				sLastMouseMoveFrame = io.frame;
+			}
 			sLastMx = io.mouseX;
 			sLastMy = io.mouseY;
 			const int hover = io.mouseInside ? ps.At(io.mouseX, io.mouseY, selGroup) : -1;
@@ -513,30 +521,41 @@ namespace pce::Menus
 			desired = ps.At(io.mouseX, io.mouseY, selGroup);
 			if (desired >= 0 && ps.targets[desired].tab >= 0)
 				desired = -1; // hovering a tab does not switch categories
+			if (desired < 0 || ps.targets[desired].part != sHoverDonePart)
+				sHoverDonePart = 0; // the mouse left that entry
+			else
+				desired = -1; // this entry was already selected by hovering
 		}
-		sHoverChase = !sPendingPart && desired >= 0 && desired != sel;
-		if (desired >= 0 && desired != sel)
+		bool reached = desired >= 0 && desired == sel;
+		if (desired >= 0 && !reached)
 		{
-			// the game's cursor jumps straight onto the entry; d-pad steps only where that does not work
 			const uint32 part = ps.targets[desired].part;
 			if (part != sFocusPart)
 			{
 				sFocusPart = part;
 				sFocusSince = io.frame;
 			}
-			const bool direct = UI::RequestFocus(ps.targets[desired].hit, io.frame);
-			if (sel >= 0 && (!direct || io.frame - sFocusSince > 6))
+			// The game's cursor jumps straight onto the entry. D-pad steps where that is not possible (lists move their
+			// cursor themselves) or has no effect.
+			const UI::FocusResult direct = UI::RequestFocus(part, ps.targets[desired].hit, io.frame);
+			if (direct == UI::FocusResult::Focused)
+				reached = true;
+			else if (sel >= 0 && (direct == UI::FocusResult::Unavailable || io.frame - sFocusSince > 6))
 				Navigate(ps, sel, desired, io.frame);
 		}
 		else
-		{
 			sFocusPart = 0;
-			if (desired >= 0 && sPendingPart && !sConfirm.Busy() && !sNav.Busy())
+		if (reached)
+		{
+			if (!sPendingPart)
+				sHoverDonePart = ps.targets[desired].part;
+			else if (!sConfirm.Busy() && !sNav.Busy())
 			{
 				sConfirm.Start(kA, 3, 3);
 				sPendingPart = 0;
 			}
 		}
+		sHoverChase = !sPendingPart && desired >= 0 && !reached;
 		io.holdAdd |= sNav.Step() | sConfirm.Step();
 	}
 }
