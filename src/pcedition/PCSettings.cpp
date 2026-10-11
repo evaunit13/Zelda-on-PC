@@ -188,6 +188,8 @@ namespace pce
 			Get(m, "Mouse", "KeyboardCameraSpeed", s.keyCameraSpeed);
 			Get(m, "Movement", "WalkSpeed", s.walkSpeed);
 			Get(m, "Movement", "ParryWithAttack", s.parryWithAttack);
+			Get(m, "Movement", "ToggleSprint", s.toggleSprint);
+			Get(m, "Movement", "ToggleShield", s.toggleShield);
 			Get(m, "Equipment", "WheelReleaseDelayMs", s.wheelReleaseDelayMs);
 			Get(m, "Equipment", "SelectorMouseStep", s.selectorMouseStep);
 			Get(m, "Tilt", "Sensitivity", s.tiltSensitivity);
@@ -249,7 +251,9 @@ namespace pce
 		o << "KeyboardCameraSpeed=" << s.keyCameraSpeed << "\n\n";
 		o << "[Movement]\n";
 		o << "WalkSpeed=" << s.walkSpeed << "\n";
-		o << "ParryWithAttack=" << b(s.parryWithAttack) << "\n\n";
+		o << "ParryWithAttack=" << b(s.parryWithAttack) << "\n";
+		o << "ToggleSprint=" << b(s.toggleSprint) << "\n";
+		o << "ToggleShield=" << b(s.toggleShield) << "\n\n";
 		o << "[Equipment]\n";
 		o << "WheelReleaseDelayMs=" << s.wheelReleaseDelayMs << "\n";
 		o << "SelectorMouseStep=" << s.selectorMouseStep << "\n\n";

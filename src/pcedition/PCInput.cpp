@@ -347,6 +347,11 @@ namespace pce::Input
 			uint64 escNetPrint = 0;
 			bool prevEscIsBack = false;
 			bool glideClose = false;           // the jump key is closing the paraglider (until it is released)
+			// toggle modes (Settings::toggleSprint / toggleShield): the action stays "held" after one press
+			bool sprintLatch = false, shieldLatch = false;
+			bool prevSprintKey = false, prevShieldKey = false;
+			int sprintGapFrames = 0;           // Sprint key pressed again while latched: release briefly, the game needs a new press
+			sint64 sprintStillQpc = 0;         // since when the player stands still while sprint is latched
 			bool mouseLatched = false; // mouse buttons used by a menu stay inert until released
 			std::array<uint32, kActionCount> latchSuppress{}; // context remaps: original button stays off until release
 			int pushPullFrames = 0;
@@ -1025,6 +1030,50 @@ namespace pce::Input
 			}
 			fs.atkVirtual = virt;
 			act[(size_t)Action::Attack] = virt;
+		}
+		// ---- toggle modes: Sprint and Lock On / Shield stay held after one press (gameplay only) ----
+		{
+			const bool gameplay = inputEnabled && !mio.pointerMode && !ui.anyMenu && !ui.dialog;
+			const bool sprintKey = act[(size_t)Action::Sprint], shieldKey = act[(size_t)Action::Target];
+			// while swimming the Sprint key is the swim dash, which must not stay held (it would drain the stamina)
+			if (!s.toggleSprint || !gameplay || ui.Has("Dash"))
+				fs.sprintLatch = false;
+			else
+			{
+				const bool moving = act[(size_t)Action::MoveForward] || act[(size_t)Action::MoveBack] || act[(size_t)Action::MoveLeft] ||
+									act[(size_t)Action::MoveRight];
+				if (sprintKey && !fs.prevSprintKey)
+				{
+					// the same button also cancels / lets go: pressed while sprinting, the game has to see a new press
+					if (fs.sprintLatch)
+						fs.sprintGapFrames = 2;
+					fs.sprintLatch = !fs.sprintLatch;
+				}
+				if (moving || !fs.sprintLatch)
+					fs.sprintStillQpc = 0;
+				else if (fs.sprintStillQpc == 0)
+					fs.sprintStillQpc = now;
+				else if ((double)(now - fs.sprintStillQpc) / QpcFreq() > 0.4)
+					fs.sprintLatch = false; // standing still ends the sprint
+				if (fs.sprintLatch && moving)
+					act[(size_t)Action::Sprint] = true;
+			}
+			if (fs.sprintGapFrames > 0)
+			{
+				fs.sprintGapFrames--;
+				act[(size_t)Action::Sprint] = false;
+			}
+			fs.prevSprintKey = sprintKey;
+			if (!s.toggleShield || !gameplay)
+				fs.shieldLatch = false;
+			else
+			{
+				if (shieldKey && !fs.prevShieldKey)
+					fs.shieldLatch = !fs.shieldLatch;
+				if (fs.shieldLatch)
+					act[(size_t)Action::Target] = true;
+			}
+			fs.prevShieldKey = shieldKey;
 		}
 		auto pressed = [&](Action a) { return act[(size_t)a] && !fs.prevAction[(size_t)a]; };
 		auto down = [&](Action a) { return act[(size_t)a]; };

@@ -156,6 +156,8 @@ namespace pce::Overlay
 				p.items.push_back(slider("Keyboard Camera Speed", &sEdit.keyCameraSpeed, 0.1f, 1.0f, 0.05f, "%.2f", "Speed of the optional keyboard camera keys."));
 				p.items.push_back(slider("Walk Speed", &sEdit.walkSpeed, 0.2f, 0.8f, 0.05f, "%.2f", "Movement speed while the Walk key is held."));
 				p.items.push_back(toggle("Parry with Attack", &sEdit.parryWithAttack, "While the shield is raised (Lock On held), the Attack key performs a perfect guard."));
+				p.items.push_back(toggle("Toggle Sprint", &sEdit.toggleSprint, "On: press the Sprint key once to keep sprinting while you move. Press it again or stand still to stop. Off: hold the key."));
+				p.items.push_back(toggle("Toggle Lock On / Shield", &sEdit.toggleShield, "On: press the Lock On key once to keep the shield raised and the target locked, press it again to lower it. Off: hold the key. Crouching is always a toggle in the game."));
 				p.items.push_back(slider("Weapon Wheel Delay", &sEdit.wheelReleaseDelayMs, 150.0f, 1200.0f, 25.0f, "%.0f ms", "How long the weapon selector stays open after the last mouse wheel step."));
 				pages.push_back(std::move(p));
 			}
