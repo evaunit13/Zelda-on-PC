@@ -200,21 +200,24 @@ namespace pce::UI
 		//   entry    +0x04 next node, +0x08 owner control, +0x0C screen
 		//   owner    +0x1E flags (0x10 = can be selected), +0x38 pane (global matrix: translation at +0x54 / +0x64).
 		//            The pane is the hit pane ("B_Hit_00") of the part the pointer knows as a target.
-		// Screens use the same request slot themselves (0x03A2EEE4). Lists (the quests of the adventure log, the armour
-		// list of a Great Fairy) keep their own current row and request its entry in every frame: a request of ours is
-		// overruled one frame later, the cursor flickers between the two rows and plays its sound each time. Such
-		// screens are left alone (the request slot is already taken when our hook runs) and are driven with the d-pad,
-		// which moves the list's own row.
+		// Screens use the same request slot themselves (0x03A2EEE4), some of them in every frame for the entry they
+		// consider current: the slot is then already taken when our hook runs, and a request of ours would be overruled
+		// one frame later (the cursor flickers between two entries and plays its sound each time). Those screens keep
+		// their own current entry:
+		//   - shop style screens (the armour list of a Great Fairy, shops) have a list widget that is told the wanted
+		//     entry directly (see ListIndexOf)
+		//   - the others (the quests of the adventure log) are driven with the d-pad, which moves their own row
 		struct FocusRequest
 		{
 			uint32 part = 0;
 			Rect area{};
 			uint32 frame = 0xF0000000;
-			int result = 0; // 0 not looked at yet, 1 requested, 2 no selectable entry, 3 already focused
+			int result = 0; // 0 not looked at yet, 1 requested, 2 no selectable entry, 3 already focused, 4 the screen has its own row
 		};
 		std::mutex sFocusMutex;
 		FocusRequest sFocusReq;
 		std::atomic<uint32> sCursorMgr{0}, sCursorFrame{0xF0000000}, sCursorRequested{0}, sCursorOwnedFrame{0xF0000000};
+		std::atomic<uint32> sListFrame{0xF0000000}; // a list widget took the request
 
 		// levels between a pane and a part pane above it (0 = the pane itself), -1 if the part is not above it
 		int LevelsBelow(uint32 pane, uint32 part)
@@ -307,6 +310,90 @@ namespace pce::UI
 			return bestOwn ? bestOwn : best;
 		}
 
+		// ---- list widget of the shop style screens (U-King v1.5.0, update 0x02E810CC) ----
+		// It has a current index (+0x298) and a wanted index (+0x29C). Its update adopts the wanted one (the d-pad
+		// changes it) and asks the cursor for the entry of the current one in every frame. Writing the wanted index
+		// selects an entry in the next frame, with everything the game does on a cursor move.
+		//   widget    +0x21C / +0x224 categories (count / pointers), +0x298 current index, +0x29C wanted index
+		//   category  +0x04 pages {+0x00 count, +0x08 pointers}, +0x230 number of entries, +0x234 * +0x238 entries per page
+		//   page      +0x04 category, +0x0C / +0x14 slots (count / pointers), +0x1C state (+0x0C page number, < 0 unused)
+		//   slot      +0x08 page, +0x10 cursor entry, +0x14 flags (2 = in use), +0x20 position on its page
+		// The pages are shared: a page shows one category at a time (its +0x04).
+		// index = entries of the categories before it + page number * entries per page + position (0x02E7C340 /
+		// 0x02E73E54 are the game's own conversions)
+		sint32 ListIndexOf(uint32 widget, uint32 entry)
+		{
+			const uint32 catCount = std::min<uint32>(memory_readU32(widget + 0x21C), 32), cats = memory_readU32(widget + 0x224);
+			if (!catCount || !ValidPtr(cats, catCount * 4))
+				return -1;
+			// the slot that shows the entry (the pages are shared by the categories: any category leads to them)
+			uint32 found = 0;
+			for (uint32 c = 0; c < catCount && !found; c++)
+			{
+				const uint32 cat = memory_readU32(cats + c * 4);
+				const uint32 pages = ValidPtr(cat, 0x280) ? memory_readU32(cat + 0x04) : 0;
+				const uint32 pageCount = ValidPtr(pages, 0x0C) ? std::min<uint32>(memory_readU32(pages), 16) : 0;
+				const uint32 pageArr = pageCount ? memory_readU32(pages + 0x08) : 0;
+				for (uint32 p = 0; p < pageCount && ValidPtr(pageArr, pageCount * 4) && !found; p++)
+				{
+					const uint32 page = memory_readU32(pageArr + p * 4);
+					if (!ValidPtr(page, 0x20))
+						continue;
+					const uint32 slotCount = std::min<uint32>(memory_readU32(page + 0x0C), 64), slots = memory_readU32(page + 0x14);
+					for (uint32 k = 0; k < slotCount && ValidPtr(slots, slotCount * 4); k++)
+					{
+						const uint32 slot = memory_readU32(slots + k * 4);
+						if (ValidPtr(slot, 0x30) && (memory_readU32(slot + 0x14) & 2) && memory_readU32(slot + 0x10) == entry)
+						{
+							found = slot;
+							break;
+						}
+					}
+				}
+			}
+			if (!found)
+				return -1;
+			// its page tells the category it shows at the moment and the page number
+			const uint32 page = memory_readU32(found + 0x08);
+			if (!ValidPtr(page, 0x20))
+				return -1;
+			const uint32 cat = memory_readU32(page + 0x04), state = memory_readU32(page + 0x1C);
+			if (!ValidPtr(cat, 0x280) || !ValidPtr(state, 0x10) || (sint32)memory_readU32(state + 0x0C) < 0)
+				return -1;
+			sint32 index = (sint32)(memory_readU32(state + 0x0C) * memory_readU32(cat + 0x234) * memory_readU32(cat + 0x238) + memory_readU32(found + 0x20));
+			for (uint32 c = 0; c < catCount; c++)
+			{
+				const uint32 other = memory_readU32(cats + c * 4);
+				if (other == cat)
+					return index;
+				if (ValidPtr(other, 0x280))
+					index += (sint32)memory_readU32(other + 0x230);
+			}
+			return -1;
+		}
+
+		void HLE_ListTick(PPCInterpreter_t* hCPU)
+		{
+			const uint32 widget = hCPU->gpr[3], current = hCPU->gpr[4];
+			const uint32 frame = Input::GetDebug().frameCounter.load();
+			const uint32 mgr = sCursorMgr.load();
+			if (ValidPtr(widget, 0x2C0) && ValidPtr(mgr, 0x30) && frame - sCursorFrame.load() <= 3)
+			{
+				std::lock_guard lock(sFocusMutex);
+				if (frame - sFocusReq.frame <= 2)
+				{
+					const uint32 entry = FindCursorEntry(mgr, sFocusReq.part, sFocusReq.area);
+					const sint32 index = entry && entry != current ? ListIndexOf(widget, entry) : -1;
+					if (index >= 0)
+					{
+						memory_writeU32(widget + 0x29C, (uint32)index);
+						sListFrame = frame;
+					}
+				}
+			}
+			hCPU->instructionPointer = hCPU->spr.LR;
+		}
+
 		void HLE_CursorTick(PPCInterpreter_t* hCPU)
 		{
 			const uint32 mgr = hCPU->gpr[3];
@@ -315,20 +402,27 @@ namespace pce::UI
 			sCursorFrame = frame;
 			if (ValidPtr(mgr, 0x30))
 			{
-				// the shown screen asked for an entry itself: it moves the cursor on its own (see above)
+				// Our own request was consumed by the update that followed the last hook, so a taken slot means that the
+				// shown screen asked for an entry itself.
 				const uint32 pending = memory_readU32(mgr + 0x28);
-				if (pending != 0 && pending != sCursorRequested.load())
+				if (pending != 0)
 					sCursorOwnedFrame = frame;
+				const bool owned = frame - sCursorOwnedFrame.load() <= 8;
 				std::lock_guard lock(sFocusMutex);
-				if (frame - sFocusReq.frame <= 2 && frame - sCursorOwnedFrame.load() > 8)
+				if (frame - sFocusReq.frame <= 2)
 				{
 					const uint32 entry = FindCursorEntry(mgr, sFocusReq.part, sFocusReq.area);
-					const bool focused = entry && entry == memory_readU32(mgr + 0x24);
-					sFocusReq.result = !entry ? 2 : focused ? 3 : 1;
-					if (entry && !focused)
+					if (!entry)
+						sFocusReq.result = 2;
+					else if (entry == memory_readU32(mgr + 0x24) && (pending == 0 || pending == entry))
+						sFocusReq.result = 3;
+					else if (owned)
+						sFocusReq.result = frame - sListFrame.load() <= 4 ? 1 : 4; // its list widget has it / d-pad
+					else
 					{
 						memory_writeU32(mgr + 0x28, entry);
 						sCursorRequested = entry;
+						sFocusReq.result = 1;
 					}
 				}
 			}
@@ -961,7 +1055,7 @@ namespace pce::UI
 			std::string label;
 			uint8 labelAlpha = 0;
 			int order = 0;
-			bool modal = false;
+			int level = 0; // what covers what (ModalLevel of the screen)
 			uint32 group = 0;
 			bool isTab = false;
 			bool questTab = false;
@@ -977,8 +1071,17 @@ namespace pce::UI
 				   name == "AppSystemWindow_00" || name == "OptionWindow_00" || name == "End_00";
 		}
 
+		// Only the topmost level is clickable: the answers of a conversation lie on top of everything (a Great Fairy asks
+		// "Enhance it?" over her armour list, which is a shop list), then dialogs and shop lists, then the rest.
+		int ModalLevel(const std::string& name)
+		{
+			if (name.rfind("MessageDialog", 0) == 0)
+				return 2;
+			return IsModalScreen(name) ? 1 : 0;
+		}
+
 		void WalkLayout(uint32 root, bool boxCursor, PointerSnapshot& ps, std::vector<std::pair<float, float>>& boxCorners,
-						std::unordered_map<uint32, PartInfo>& parts, bool modal = false)
+						std::unordered_map<uint32, PartInfo>& parts, int level = 0)
 		{
 			struct Item
 			{
@@ -1065,7 +1168,7 @@ namespace pce::UI
 						pi.hasHit = true;
 						pi.hit = r;
 						pi.order = (int)parts.size();
-						pi.modal = modal;
+						pi.level = level;
 					}
 				}
 				else if (name == "N_MapT_00")
@@ -1149,23 +1252,26 @@ namespace pce::UI
 				if (scr.rfind("MainScreen", 0) == 0 || scr == "DoCommand_00" || scr == "MainShortCut_00" || scr == "PauseMenuBG_00")
 					continue; // HUD layers: no pointer targets
 				std::vector<std::pair<float, float>> none;
-				WalkLayout(root, false, ps, none, parts, IsModalScreen(scr));
+				WalkLayout(root, false, ps, none, parts, ModalLevel(scr));
 			}
 			auto onScreen = [](const Rect& r) { return r.cx() > 0.0f && r.cx() < 1.0f && r.cy() > 0.0f && r.cy() < 1.0f; };
 			std::vector<std::pair<int, Target>> ordered;
-			bool anyModal = false;
+			int topLevel = 0;
 			for (auto& [part, pi] : parts)
-				anyModal |= pi.hasHit && pi.modal;
+			{
+				if (pi.hasHit)
+					topLevel = std::max(topLevel, pi.level);
+			}
 			for (auto& [part, pi] : parts)
-				if (pi.arrow && pi.arrowShown && !anyModal && onScreen(pi.arrowRect))
+				if (pi.arrow && pi.arrowShown && topLevel == 0 && onScreen(pi.arrowRect))
 				{
 					ps.pageArrow[pi.arrow - 1] = true;
 					ps.pageArrowRect[pi.arrow - 1] = pi.arrowRect;
 				}
 			for (auto& [part, pi] : parts)
 			{
-				if (!pi.hasHit || (anyModal && !pi.modal))
-					continue; // a dialog on top: the screens behind it are not clickable
+				if (!pi.hasHit || pi.level < topLevel)
+					continue; // something lies on top: the screens behind it are not clickable
 				Target t;
 				t.part = part;
 				t.hit = pi.hit;
@@ -1315,7 +1421,7 @@ namespace pce::UI
 		sFocusReq.part = part;
 		sFocusReq.area = area;
 		sFocusReq.frame = frame;
-		if (frame - sCursorFrame.load() > 3 || frame - sCursorOwnedFrame.load() <= 8 || sFocusReq.result == 2)
+		if (frame - sCursorFrame.load() > 3 || sFocusReq.result == 2 || sFocusReq.result == 4)
 			return FocusResult::Unavailable;
 		return sFocusReq.result == 3 ? FocusResult::Focused : FocusResult::Requested;
 	}
@@ -1560,6 +1666,7 @@ namespace pce::UI
 		osLib_addFunction("coreinit", "PCE_UIScreen", HLE_UIScreen);
 		osLib_addFunction("coreinit", "PCE_MapObj", HLE_MapObj);
 		osLib_addFunction("coreinit", "PCE_CursorTick", HLE_CursorTick);
+		osLib_addFunction("coreinit", "PCE_ListTick", HLE_ListTick);
 	}
 
 	std::atomic<uint64> sComputeTotalUs{0}, sComputeCount{0}, sComputeMaxUs{0};

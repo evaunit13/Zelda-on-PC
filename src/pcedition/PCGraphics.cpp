@@ -278,6 +278,17 @@ bl import.coreinit.PCE_CursorTick
 mtlr r12
 blr
 
+; list widget of the shop style screens (r30), right after it asked the cursor for its current entry (r31):
+; PCE_ListTick may set the index the widget is to select next (+0x29C)
+_pceListTick:
+stw r31, 0x2a8(r30)
+mflr r12
+mr r3, r30
+mr r4, r31
+bl import.coreinit.PCE_ListTick
+mtlr r12
+blr
+
 ; inventory page carousel: the scroll offset (screen+0x1B98) snaps to its target instead of easing,
 ; so a page / category change is applied in a single frame (replaces bl ease(r3, r4 = &offset, f1 = target, ...))
 _pceSlideSnap:
@@ -289,6 +300,7 @@ blr
 0x03A3EDC8 = bla _pceUIScreen
 0x02F033E0 = bla _pceMapObj
 0x03A2E8E4 = bla _pceCursorTick
+0x02E816E8 = bla _pceListTick
 0x02CB7004 = bla _pceGlideTick
 0x02FF64CC = bla _pceSlideSnap
 )";
