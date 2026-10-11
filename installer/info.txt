@@ -1,0 +1,11 @@
+Zelda on PC runs your own copy of The Legend of Zelda: Breath of the Wild (Wii U version) on the Cemu emulator, set up as a PC game: keyboard and mouse controls with on-screen key prompts, a PC settings menu, mouse support in the game's menus and AMD FSR 3 frame generation.
+
+NO GAME FILES ARE INCLUDED. You need your own dump of the game, as folders that contain "code", "content" and "meta":
+
+  - the base game (Europe, Americas or Japan)
+  - the update 1.5.0 (required)
+  - the DLC (optional)
+
+The next steps ask where to install Zelda on PC and where your game dump is. Nothing is copied from or changed in your game folder.
+
+Zelda on PC is an unofficial fan project. It is not affiliated with or endorsed by Nintendo or the Cemu project.

@@ -1,0 +1,42 @@
+Zelda on PC - third-party notices
+=================================
+
+Zelda on PC is a modified version of Cemu, the Wii U emulator. It contains no game data and no Nintendo code.
+It is an unofficial fan project, not affiliated with or endorsed by Nintendo, the Cemu project or AMD.
+
+Cemu
+    Copyright (c) Team Cemu and contributors
+    Mozilla Public License 2.0 (see LICENSE.txt)
+    https://github.com/cemu-project/Cemu
+    The source code of this modified version is published in the Zelda on PC repository, the place this
+    installer was downloaded from.
+
+AMD FidelityFX SDK 1.1.4 (amd_fidelityfx_vk.dll, FSR 3 frame generation)
+    Copyright (c) Advanced Micro Devices, Inc.
+    MIT License (see licenses\FidelityFX-SDK.txt)
+    https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK
+
+Cemu community graphic packs v987 (resources\pcedition\graphicPacks: "Graphics" and "FPS++" for Breath of the Wild)
+    Made by the Cemu graphic pack community
+    CC0 1.0 Universal
+    https://github.com/cemu-project/cemu_graphic_packs
+
+Key prompt font (resources\pcedition\External_00.bffnt)
+    Artwork of this project. The key labels are set in Roboto Medium.
+    Roboto: Copyright (c) Google, Apache License 2.0
+    https://github.com/googlefonts/roboto
+
+Replacement system fonts (resources\sharedFonts)
+    As distributed with Cemu.
+
+Dear ImGui
+    Copyright (c) Omar Cornut
+    MIT License (see licenses\imgui.txt)
+    https://github.com/ocornut/imgui
+
+Cemu is linked with further open source libraries, among them wxWidgets, SDL, Boost, {fmt}, pugixml, glslang,
+zlib, zstd, OpenSSL, libcurl, cubeb, libusb, hidapi and RapidJSON. The complete list with their versions is in
+vcpkg.json and in the dependencies folder of the source repository.
+
+"The Legend of Zelda" and "Breath of the Wild" are trademarks of Nintendo. "Wii U" is a trademark of Nintendo.
+"AMD", "FidelityFX" and "FSR" are trademarks of Advanced Micro Devices, Inc.
