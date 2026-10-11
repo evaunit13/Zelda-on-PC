@@ -155,6 +155,9 @@ public:
 
 	// memory management
 	std::unique_ptr<VKRMemoryManager> memoryManager;
+	std::unique_ptr<class VulkanFSRInputs> m_fsrInputs;
+	bool m_pceFsrDevice = false;
+	uint64 m_fsrDumpCmdBuffer = 0;
 	VKRMemoryManager* GetMemoryManager() const { return memoryManager.get(); };
 
 	VkSupportedFormatInfo_t m_supportedFormatInfo;
@@ -237,6 +240,16 @@ public:
 	void Shutdown() override;
 
 	void SwapBuffers(bool swapTV = true, bool swapDRC = true) override;
+
+	bool FSR_CaptureSnapshot(LatteTextureView* color, LatteTextureView* depth) override;
+	void FSR_BuildMotionVectors(const float reproj[16], uint32 flags) override;
+	void FSR_RequestDump(const std::string& path, int count) override;
+	bool FSR_Supported() const;
+	void FSR_SetWanted(bool wanted) override;
+	bool FSR_IsRunning() override;
+	uint64 FSR_PresentCount() override;
+	bool FSR_PrepareFrame(const FSRFrameParams& p) override;
+	void FSR_DisableGeneration() override;
 
 	void Flush(bool waitIdle = false) override;
 	void NotifyLatteCommandProcessorIdle() override;

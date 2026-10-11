@@ -32,6 +32,7 @@ struct PPCRecFunction_t
 	size_t x86Size;
 	std::vector<ppcRecRange_t> list_ranges;
 	boost::container::small_vector<JumpTableEntry, 2> jumpTableEntries;
+	std::vector<std::pair<uint32, uint32>> pceSegments; // Zelda on PC profiler: host offset -> PPC address
 };
 
 #include "Cafe/HW/Espresso/Recompiler/IML/IMLInstruction.h"

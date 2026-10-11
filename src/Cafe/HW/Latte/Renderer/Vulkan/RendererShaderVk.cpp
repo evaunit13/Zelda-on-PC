@@ -456,3 +456,42 @@ void RendererShaderVk::ShaderCacheLoading_Close()
     delete s_spirvCache;
     s_spirvCache = nullptr;
 }
+
+// Zelda on PC: compile a standalone GLSL shader to SPIR-V (stage: 0 vertex, 1 fragment, 2 compute)
+std::vector<uint32> RendererShaderVk_CompileStage(const std::string& source, int stage, std::string& errorOut);
+
+std::vector<uint32> RendererShaderVk_CompileCompute(const std::string& source, std::string& errorOut)
+{
+	return RendererShaderVk_CompileStage(source, 2, errorOut);
+}
+
+std::vector<uint32> RendererShaderVk_CompileStage(const std::string& source, int stage, std::string& errorOut)
+{
+	const EShLanguage lang = stage == 0 ? EShLangVertex : (stage == 1 ? EShLangFragment : EShLangCompute);
+	glslang::TShader shader(lang);
+	const char* cstr = source.c_str();
+	shader.setStrings(&cstr, 1);
+	shader.setEnvInput(glslang::EShSourceGlsl, lang, glslang::EShClientVulkan, 100);
+	shader.setEnvClient(glslang::EShClientVulkan, glslang::EShTargetClientVersion::EShTargetVulkan_1_1);
+	shader.setEnvTarget(glslang::EShTargetSpv, glslang::EShTargetLanguageVersion::EShTargetSpv_1_3);
+	TBuiltInResource resources = GetDefaultBuiltInResource();
+	const EShMessages messages = (EShMessages)(EShMsgSpvRules | EShMsgVulkanRules);
+	if (!shader.parse(&resources, 450, false, messages))
+	{
+		errorOut = shader.getInfoLog();
+		return {};
+	}
+	glslang::TProgram program;
+	program.addShader(&shader);
+	if (!program.link(messages))
+	{
+		errorOut = program.getInfoLog();
+		return {};
+	}
+	std::vector<uint32> spirv;
+	spv::SpvBuildLogger logger;
+	glslang::SpvOptions options;
+	options.disableOptimizer = false;
+	GlslangToSpv(*program.getIntermediate(lang), spirv, &logger, &options);
+	return spirv;
+}

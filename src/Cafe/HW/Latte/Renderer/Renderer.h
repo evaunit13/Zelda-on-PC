@@ -79,6 +79,25 @@ public:
 												bool padView, bool clearBackground) = 0;
 	virtual bool BeginFrame(bool mainWindow) = 0;
 
+	// Zelda on PC: AMD FSR 3 frame generation inputs (see LatteRenderTarget.cpp)
+	virtual bool FSR_CaptureSnapshot(LatteTextureView* color, LatteTextureView* depth) { return false; }
+	virtual void FSR_BuildMotionVectors(const float reproj[16], uint32 flags) {}
+	virtual void FSR_RequestDump(const std::string& path, int count) {}
+	struct FSRFrameParams
+	{
+		float cameraNear, cameraFar, fovY;
+		float position[3], up[3], right[3], forward[3];
+		float frameTimeMs;
+		bool reset;
+		uint32 debugFlags;
+		sint32 imageX, imageY, imageWidth, imageHeight; // area of the backbuffer showing the game image
+	};
+	virtual void FSR_SetWanted(bool wanted) {}
+	virtual bool FSR_IsRunning() { return false; }
+	virtual uint64 FSR_PresentCount() { return 0; }
+	virtual bool FSR_PrepareFrame(const FSRFrameParams& p) { return false; }
+	virtual void FSR_DisableGeneration() {}
+
 	// flush control
 	virtual void Flush(bool waitIdle = false) = 0; // called when explicit flush is required (e.g. by imgui)
 	virtual void NotifyLatteCommandProcessorIdle() = 0; // called when command processor has no more commands available or when stalled

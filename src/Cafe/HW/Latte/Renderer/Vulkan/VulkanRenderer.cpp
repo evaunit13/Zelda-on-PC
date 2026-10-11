@@ -1,4 +1,6 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
+#include "Cafe/HW/Latte/Renderer/Vulkan/VulkanFSR.h"
+#include "Cafe/HW/Latte/Renderer/Vulkan/VulkanFFX.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/LatteTextureVk.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/RendererShaderVk.h"
@@ -645,6 +647,46 @@ VulkanRenderer::VulkanRenderer() : Renderer(RendererAPI::Vulkan)
 	m_indices = FindQueueFamilies(surface, m_physicalDevice);
 	std::set<int> uniqueQueueFamilies = { m_indices.graphicsFamily, m_indices.presentFamily };
 	std::vector<VkDeviceQueueCreateInfo> queueCreateInfos = CreateQueueCreateInfos(uniqueQueueFamilies);
+	// Zelda on PC: AMD FSR 3 frame generation needs extra queues (present, image acquire: graphics family; async compute)
+	static const float s_pceQueuePriorities[4] = {1.0f, 1.0f, 1.0f, 1.0f};
+	uint32 pceGraphicsQueues = 1;
+	sint32 pceComputeFamily = -1;
+	bool pceFsrFeatures = false;
+	{
+		uint32 familyCount = 0;
+		vkGetPhysicalDeviceQueueFamilyProperties(m_physicalDevice, &familyCount, nullptr);
+		std::vector<VkQueueFamilyProperties> families(familyCount);
+		vkGetPhysicalDeviceQueueFamilyProperties(m_physicalDevice, &familyCount, families.data());
+		pceGraphicsQueues = std::min<uint32>(families[m_indices.graphicsFamily].queueCount, 3);
+		for (uint32 i = 0; i < familyCount; i++)
+		{
+			if ((families[i].queueFlags & VK_QUEUE_COMPUTE_BIT) && !(families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT))
+			{
+				pceComputeFamily = (sint32)i;
+				break;
+			}
+		}
+		for (auto& q : queueCreateInfos)
+		{
+			if (q.queueFamilyIndex == (uint32)m_indices.graphicsFamily)
+			{
+				q.queueCount = pceGraphicsQueues;
+				q.pQueuePriorities = s_pceQueuePriorities;
+			}
+		}
+		if (pceComputeFamily >= 0 && !uniqueQueueFamilies.contains(pceComputeFamily))
+		{
+			VkDeviceQueueCreateInfo q{};
+			q.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+			q.queueFamilyIndex = (uint32)pceComputeFamily;
+			q.queueCount = 1;
+			q.pQueuePriorities = s_pceQueuePriorities;
+			queueCreateInfos.emplace_back(q);
+		}
+		VkPhysicalDeviceProperties props{};
+		vkGetPhysicalDeviceProperties(m_physicalDevice, &props);
+		pceFsrFeatures = VK_API_VERSION_MINOR(props.apiVersion) >= 3 && VK_API_VERSION_MINOR(apiVersion) >= 3 && VulkanFFX::Get().Load();
+	}
 	VkPhysicalDeviceFeatures deviceFeatures = {};
 	VkPhysicalDeviceFeatures2 deviceFeatures2 = {};
 	deviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
@@ -746,6 +788,30 @@ VulkanRenderer::VulkanRenderer() : Renderer(RendererAPI::Vulkan)
 		attachmentFeedbackLoopDynamicStateFeature.attachmentFeedbackLoopDynamicState = VK_TRUE;
 	}
 
+	// Zelda on PC: features the FidelityFX runtime uses when the device supports them (timeline semaphores are required)
+	VkPhysicalDeviceTimelineSemaphoreFeatures pceTimeline{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES};
+	VkPhysicalDeviceShaderFloat16Int8Features pceFloat16{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES};
+	VkPhysicalDevice16BitStorageFeatures pceStorage16{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES};
+	VkPhysicalDeviceSubgroupSizeControlFeatures pceSubgroup{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_SIZE_CONTROL_FEATURES};
+	if (pceFsrFeatures)
+	{
+		pceTimeline.pNext = &pceFloat16;
+		pceFloat16.pNext = &pceStorage16;
+		pceStorage16.pNext = &pceSubgroup;
+		VkPhysicalDeviceFeatures2 query{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+		query.pNext = &pceTimeline;
+		vkGetPhysicalDeviceFeatures2(m_physicalDevice, &query);
+		if (pceTimeline.timelineSemaphore)
+		{
+			// keep only what is supported (the query filled in the flags)
+			pceFloat16.shaderInt8 = VK_FALSE;
+			pceStorage16.storageInputOutput16 = VK_FALSE;
+			pceSubgroup.pNext = deviceExtensionFeatures;
+			deviceExtensionFeatures = &pceTimeline;
+			m_pceFsrDevice = true;
+		}
+	}
+
 	std::vector<const char*> used_extensions;
 	VkDeviceCreateInfo createInfo = CreateDeviceCreateInfo(queueCreateInfos, deviceFeatures, deviceExtensionFeatures, used_extensions);
 
@@ -760,6 +826,21 @@ VulkanRenderer::VulkanRenderer() : Renderer(RendererAPI::Vulkan)
 
 	vkGetDeviceQueue(m_logicalDevice, m_indices.graphicsFamily, 0, &m_graphicsQueue);
 	vkGetDeviceQueue(m_logicalDevice, m_indices.graphicsFamily, 0, &m_presentQueue);
+	// Zelda on PC: queues for the FSR 3 frame interpolation swapchain
+	if (m_pceFsrDevice && pceGraphicsQueues >= 3)
+	{
+		VulkanFFX::QueueInfo game{m_graphicsQueue, (uint32)m_indices.graphicsFamily}, present{}, acquire{}, compute{};
+		present.family = acquire.family = (uint32)m_indices.graphicsFamily;
+		vkGetDeviceQueue(m_logicalDevice, m_indices.graphicsFamily, 1, &present.queue);
+		vkGetDeviceQueue(m_logicalDevice, m_indices.graphicsFamily, 2, &acquire.queue);
+		if (pceComputeFamily >= 0)
+		{
+			compute.family = (uint32)pceComputeFamily;
+			vkGetDeviceQueue(m_logicalDevice, (uint32)pceComputeFamily, 0, &compute.queue);
+		}
+		VulkanFFX::Get().SetQueues(game, present, acquire, compute);
+	}
+	cemuLog_log(LogType::Force, "FSR: device support {} (graphics queues {}, compute family {})", m_pceFsrDevice && VulkanFFX::Get().HasQueues(), pceGraphicsQueues, pceComputeFamily);
 
 	vkDestroySurfaceKHR(m_instance, surface, nullptr);
 
@@ -1330,6 +1411,21 @@ VkDeviceCreateInfo VulkanRenderer::CreateDeviceCreateInfo(const std::vector<VkDe
 	}
 	if (m_featureControl.deviceExtensions.pipeline_robustness)
 		used_extensions.emplace_back(VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME);
+	if (m_pceFsrDevice)
+	{
+		// Zelda on PC: the FidelityFX runtime calls the KHR entry points of these when the device lists them
+		uint32 count = 0;
+		vkEnumerateDeviceExtensionProperties(m_physicalDevice, nullptr, &count, nullptr);
+		std::vector<VkExtensionProperties> available(count);
+		vkEnumerateDeviceExtensionProperties(m_physicalDevice, nullptr, &count, available.data());
+		for (const char* ext : {VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME, VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME})
+		{
+			const bool has = std::any_of(available.begin(), available.end(), [ext](const VkExtensionProperties& e) { return strcmp(e.extensionName, ext) == 0; });
+			const bool already = std::any_of(used_extensions.begin(), used_extensions.end(), [ext](const char* e) { return strcmp(e, ext) == 0; });
+			if (has && !already)
+				used_extensions.emplace_back(ext);
+		}
+	}
 	if (UseAttachmentFeedbackLoop())
 	{
 		used_extensions.emplace_back(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_LAYOUT_EXTENSION_NAME);
@@ -1868,6 +1964,9 @@ void VulkanRenderer::Shutdown()
 {
 	SubmitCommandBuffer();
 	WaitDeviceIdle();
+	m_fsrInputs.reset();
+	if (m_mainSwapchainInfo)
+		m_mainSwapchainInfo->Cleanup(); // the FSR 3 swapchain must go before the device
 	// stop compilation threads
 	RendererShaderVk::Shutdown();
 	PipelineCompiler::CompileThreadPool_Stop();
@@ -2994,6 +3093,9 @@ bool VulkanRenderer::UpdateSwapchainProperties(bool mainWindow)
 	const auto configValue =  (VSync)GetConfig().vsync.GetValue();
 	if(chainInfo.m_vsyncState != configValue)
 		stateChanged = true;
+	// Zelda on PC: FSR 3 frame generation switched on / off
+	if (mainWindow && chainInfo.m_ffx != (SwapchainInfoVk::s_ffxWanted && FSR_Supported()))
+		stateChanged = true;
 
 	int width, height;
 	if (mainWindow)
@@ -3078,7 +3180,7 @@ void VulkanRenderer::SwapBuffer(bool mainWindow)
 		}
 	}
 
-	VkResult result = vkQueuePresentKHR(m_presentQueue, &presentInfo);
+	VkResult result = chainInfo.m_ffx ? VulkanFFX::Get().QueuePresent(m_presentQueue, &presentInfo) : vkQueuePresentKHR(m_presentQueue, &presentInfo);
 	if (result < 0 && result != VK_ERROR_OUT_OF_DATE_KHR)
 	{
 		throw std::runtime_error(fmt::format("Failed to present image: {}", result));
@@ -3095,6 +3197,109 @@ void VulkanRenderer::SwapBuffer(bool mainWindow)
 	chainInfo.hasDefinedSwapchainImage = false;
 
 	chainInfo.swapchainImageIndex = -1;
+}
+
+bool VulkanRenderer::FSR_CaptureSnapshot(LatteTextureView* color, LatteTextureView* depth)
+{
+	auto* ct = (LatteTextureVk*)color->baseTexture;
+	auto* dt = (LatteTextureVk*)depth->baseTexture;
+	if (!m_fsrInputs)
+		m_fsrInputs = std::make_unique<VulkanFSRInputs>(m_logicalDevice, m_physicalDevice);
+	if (m_fsrInputs->DumpRecorded() && HasCommandBufferFinished(m_fsrDumpCmdBuffer))
+		m_fsrInputs->FinishDump();
+	draw_endRenderPass();
+	sint32 cw, ch, dw, dh;
+	ct->GetEffectiveSize(cw, ch, 0);
+	dt->GetEffectiveSize(dw, dh, 0);
+	VkImageSubresourceLayers cs{VK_IMAGE_ASPECT_COLOR_BIT, (uint32)color->firstMip, (uint32)color->firstSlice, 1};
+	VkImageSubresourceLayers ds{dt->GetImageAspect(), (uint32)depth->firstMip, (uint32)depth->firstSlice, 1};
+	barrier_image<SYNC_OP::ANY_TRANSFER | SYNC_OP::IMAGE_READ | SYNC_OP::IMAGE_WRITE, SYNC_OP::ANY_TRANSFER>(ct, cs, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+	barrier_image<SYNC_OP::ANY_TRANSFER | SYNC_OP::IMAGE_READ | SYNC_OP::IMAGE_WRITE, SYNC_OP::ANY_TRANSFER>(dt, ds, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+	ct->GetImageObj()->flagForCurrentCommandBuffer();
+	dt->GetImageObj()->flagForCurrentCommandBuffer();
+	return m_fsrInputs->CaptureSnapshot(m_state.currentCommandBuffer, ct->GetImageObj()->m_image, ct->GetFormat(), (uint32)cw, (uint32)ch, dt->GetImageObj()->m_image,
+		dt->GetFormat(), (uint32)dw, (uint32)dh);
+}
+
+void VulkanRenderer::FSR_BuildMotionVectors(const float reproj[16], uint32 flags)
+{
+	if (!m_fsrInputs || !m_fsrInputs->HasSnapshot())
+		return;
+	draw_endRenderPass();
+	m_state.currentPipeline = VK_NULL_HANDLE;
+	const bool wasRecorded = m_fsrInputs->DumpRecorded();
+	m_fsrInputs->BuildMotionVectors(m_state.currentCommandBuffer, reproj, flags);
+	if (!wasRecorded && m_fsrInputs->DumpRecorded())
+		m_fsrDumpCmdBuffer = GetCurrentCommandBufferId();
+}
+
+bool VulkanRenderer::FSR_Supported() const
+{
+	return m_pceFsrDevice && VulkanFFX::Get().IsLoaded() && VulkanFFX::Get().HasQueues();
+}
+
+void VulkanRenderer::FSR_SetWanted(bool wanted)
+{
+	SwapchainInfoVk::s_ffxWanted = wanted;
+}
+
+bool VulkanRenderer::FSR_IsRunning()
+{
+	return IsSwapchainInfoValid(true) && GetChainInfo(true).m_ffx;
+}
+
+uint64 VulkanRenderer::FSR_PresentCount()
+{
+	return VulkanFFX::Get().PresentCount();
+}
+
+bool VulkanRenderer::FSR_PrepareFrame(const FSRFrameParams& p)
+{
+	if (!IsSwapchainInfoValid(true) || !m_fsrInputs || !m_fsrInputs->HasSnapshot())
+		return false;
+	auto& chainInfo = GetChainInfo(true);
+	if (!chainInfo.m_ffx)
+		return false;
+	draw_endRenderPass();
+	VkFormat hudFormat = chainInfo.m_surfaceFormat.format;
+	VkImage hudless = m_fsrInputs->BuildHudlessDisplay(m_state.currentCommandBuffer, chainInfo.getExtent(), hudFormat, p.imageX, p.imageY, p.imageWidth, p.imageHeight);
+	if (!hudless)
+		return false;
+	VulkanFFX::FrameInfo fi{};
+	fi.cmd = m_state.currentCommandBuffer;
+	fi.depth = m_fsrInputs->Depth().image;
+	fi.motionVectors = m_fsrInputs->MotionVectors().image;
+	fi.renderWidth = m_fsrInputs->MotionVectors().width;
+	fi.renderHeight = m_fsrInputs->MotionVectors().height;
+	fi.hudless = hudless;
+	fi.hudlessFormat = hudFormat;
+	fi.cameraNear = p.cameraNear;
+	fi.cameraFar = p.cameraFar;
+	fi.fovY = p.fovY;
+	memcpy(fi.position, p.position, sizeof(fi.position));
+	memcpy(fi.up, p.up, sizeof(fi.up));
+	memcpy(fi.right, p.right, sizeof(fi.right));
+	memcpy(fi.forward, p.forward, sizeof(fi.forward));
+	fi.frameTimeMs = p.frameTimeMs;
+	fi.reset = p.reset;
+	fi.debugFlags = p.debugFlags;
+	const bool ok = VulkanFFX::Get().PrepareFrame(m_physicalDevice, m_logicalDevice, chainInfo.getExtent(), chainInfo.m_surfaceFormat.format, fi);
+	// FidelityFX recorded its own pipelines / descriptor sets
+	m_state.resetCommandBufferState();
+	vkCmdSetViewport(m_state.currentCommandBuffer, 0, 1, &m_state.currentViewport);
+	vkCmdSetScissor(m_state.currentCommandBuffer, 0, 1, &m_state.currentScissorRect);
+	return ok;
+}
+
+void VulkanRenderer::FSR_DisableGeneration()
+{
+	VulkanFFX::Get().DisableGeneration();
+}
+
+void VulkanRenderer::FSR_RequestDump(const std::string& path, int count)
+{
+	if (m_fsrInputs)
+		m_fsrInputs->RequestDump(path, count);
 }
 
 void VulkanRenderer::Flush(bool waitIdle)

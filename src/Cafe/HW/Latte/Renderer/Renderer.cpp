@@ -1,4 +1,6 @@
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
+#include "pcedition/PCEdition.h"
+#include "pcedition/PCOverlay.h"
 #include "WindowSystem.h"
 
 #include "config/CemuConfig.h"
@@ -82,6 +84,8 @@ bool Renderer::ImguiBegin(bool mainWindow)
 	io.DisplaySize = {window_size.x, window_size.y}; // should be only updated in the renderer and only when needed
 
 	ImGui_PrecacheFonts();
+	if (mainWindow && pce::IsActive())
+		pce::Overlay::PrepareFrame();
 	return true;
 }
 

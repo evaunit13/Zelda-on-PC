@@ -21,6 +21,8 @@
 #include "GX2_Surface.h"
 #include "GX2_Surface_Copy.h"
 #include "GX2_Texture.h"
+#include "pcedition/PCEdition.h"
+#include "pcedition/PCUI.h"
 
 #include <cinttypes>
 
@@ -109,6 +111,9 @@ void gx2Export_GX2CopyColorBufferToScanBuffer(PPCInterpreter_t* hCPU)
 	gx2WriteGather_submitU32AsBE((uint32)colorBuffer->viewFirstSlice);
 	gx2WriteGather_submitU32AsBE((uint32)colorBuffer->surface.format.value());
 	gx2WriteGather_submitU32AsBE(hCPU->gpr[4]);
+	// Zelda on PC: the game finished the TV image of a frame (HUD prompt snapshot for exactly this frame)
+	if ((hCPU->gpr[4] & GX2_SCAN_TARGET_TV) && pce::IsActive())
+		pce::UI::OnGameFrame();
 
 	osLib_returnFromFunction(hCPU, 0);
 }

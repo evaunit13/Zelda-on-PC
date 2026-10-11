@@ -1,4 +1,6 @@
 #include "Cafe/HW/Latte/Core/LatteOverlay.h"
+#include "pcedition/PCEdition.h"
+#include "pcedition/PCOverlay.h"
 #include "Cafe/HW/Latte/Core/LattePerformanceMonitor.h"
 #include "Cafe/HW/Latte/Renderer/Renderer.h"
 #include "Cafe/Account/Account.h"
@@ -516,6 +518,12 @@ void LatteOverlay_translateScreenPosition(ScreenPosition pos, const Vector2f& wi
 
 void LatteOverlay_render(bool pad_view)
 {
+	if (pce::IsActive())
+	{
+		if (!pad_view)
+			pce::Overlay::Render();
+		return;
+	}
 	const auto& config = GetConfig();
 	if(config.overlay.position == ScreenPosition::kDisabled && config.notification.position == ScreenPosition::kDisabled)
 		return;

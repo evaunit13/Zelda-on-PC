@@ -1,3 +1,4 @@
+#include "pcedition/PCProfiler.h"
 #include "Cafe/HW/Espresso/PPCState.h"
 #include "Cafe/HW/Espresso/Interpreter/PPCInterpreterInternal.h"
 #include "Cafe/HW/Espresso/Interpreter/PPCInterpreterHelper.h"
@@ -167,7 +168,10 @@ void* ATTR_MS_ABI PPCRecompiler_virtualHLE(PPCInterpreter_t* hCPU, uint32 hleFun
 	{
 		auto hleCall = PPCInterpreter_getHLECall(hleFuncId);
 		cemu_assert(hleCall != nullptr);
+		const uint32 core = hCPU->spr.UPIR;
+		pce::Profiler::EnterHle(core, hleFuncId, hCPU->spr.LR);
 		hleCall(hCPU);
+		pce::Profiler::LeaveHle(core);
 	}
 	hCPU->rspTemp = prevRSPTemp;
 	return PPCInterpreter_getCurrentInstance();

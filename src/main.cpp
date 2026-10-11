@@ -25,6 +25,8 @@
 
 #include "audio/IAudioAPI.h"
 #include "audio/IAudioInputAPI.h"
+#include "pcedition/PCEdition.h"
+#include <boost/program_options/parsers.hpp>
 #if BOOST_OS_WINDOWS
 #pragma comment(lib,"Dbghelp.lib")
 #endif
@@ -225,6 +227,10 @@ int wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPWSTR lpCmdLine, int
 #ifdef HAS_SDL
 	SDL_SetMainReady();
 #endif
+	const std::vector<std::wstring> pceArgs = boost::program_options::split_winmain(lpCmdLine);
+	if (auto toolRc = pce::RunCommandLineTool(pceArgs))
+		return *toolRc;
+	pce::ParseCommandLine(pceArgs);
 	auto parse_rc = LaunchSettings::HandleCommandline(lpCmdLine);
 	if (parse_rc.has_value())
 		return *parse_rc;
@@ -240,6 +246,14 @@ int main(int argc, char* argv[])
 #ifdef HAS_SDL
 	SDL_SetMainReady();
 #endif
+	{
+		std::vector<std::wstring> wargs;
+		for (int i = 1; i < argc; i++)
+			wargs.emplace_back(boost::nowide::widen(argv[i]));
+		if (auto toolRc = pce::RunCommandLineTool(wargs))
+			return *toolRc;
+		pce::ParseCommandLine(wargs);
+	}
 	auto parse_rc = LaunchSettings::HandleCommandline(argc, argv);
 	if (parse_rc.has_value())
 		return *parse_rc;

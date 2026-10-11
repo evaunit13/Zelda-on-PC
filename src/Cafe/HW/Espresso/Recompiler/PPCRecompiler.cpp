@@ -19,6 +19,7 @@
 #include "BackendAArch64/BackendAArch64.h"
 #endif
 #include "util/highresolutiontimer/HighResolutionTimer.h"
+#include "pcedition/PCProfiler.h"
 
 #define PPCREC_FORCE_SYNCHRONOUS_COMPILATION	0 // if 1, then function recompilation will block and execute on the thread that called PPCRecompiler_visitAddressNoBlock
 #define PPCREC_LOG_RECOMPILATION_RESULTS		0
@@ -257,6 +258,10 @@ PPCRecFunction_t* PPCRecompiler_recompileFunction(PPCFunctionBoundaryTracker::PP
 		}
 	}
 
+	// Zelda on PC profiler: map host code back to PPC basic blocks
+	for (IMLSegment* imlSegment : ppcImlGenContext.segmentList2)
+		ppcRecFunc->pceSegments.emplace_back(imlSegment->x64Offset, imlSegment->ppcAddress);
+
 	// collect list of PPC-->x64 entry points
 	entryPointsOut.clear();
 	for(IMLSegment* imlSegment : ppcImlGenContext.segmentList2)
@@ -419,6 +424,7 @@ bool PPCRecompiler_makeRecompiledFunctionActive(uint32 initialEntryPoint, PPCFun
 	{
 		r.storedRange = s_ppcRecompilerState.functionStorage.storeRange(ppcRecFunc, r.ppcAddress, r.ppcAddress + r.ppcSize);
 	}
+	pce::Profiler::RegisterFunction(ppcRecFunc->x86Code, ppcRecFunc->x86Size, ppcRecFunc->ppcAddress, std::move(ppcRecFunc->pceSegments));
 	s_ppcRecompilerState.recompilerSpinlock.unlock();
 	return true;
 }
@@ -588,6 +594,7 @@ void PPCRecompiler_deleteFunction(PPCRecFunction_t* func)
 			s_ppcRecompilerState.functionStorage.deleteRange(r.storedRange);
 		r.storedRange = nullptr;
 	}
+	pce::Profiler::UnregisterFunction(func->x86Code);
 	// todo - free x86 code
 }
 

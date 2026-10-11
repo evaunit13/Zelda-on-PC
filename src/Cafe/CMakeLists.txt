@@ -542,6 +542,10 @@ if (ENABLE_VULKAN)
     HW/Latte/Renderer/Vulkan/VulkanQuery.cpp
     HW/Latte/Renderer/Vulkan/VulkanRendererCore.cpp
     HW/Latte/Renderer/Vulkan/VulkanRenderer.cpp
+    HW/Latte/Renderer/Vulkan/VulkanFSR.cpp
+    HW/Latte/Renderer/Vulkan/VulkanFFX.cpp
+    HW/Latte/Renderer/Vulkan/VulkanFFX.h
+    HW/Latte/Renderer/Vulkan/VulkanFSR.h
     HW/Latte/Renderer/Vulkan/VulkanRenderer.h
     HW/Latte/Renderer/Vulkan/VulkanSurfaceCopy.cpp
     HW/Latte/Renderer/Vulkan/VulkanTextureReadback.h
@@ -682,3 +686,6 @@ endif()
 if(WIN32)
 	target_link_libraries(CemuCafe PRIVATE iphlpapi)
 endif()
+
+# Zelda on PC: AMD FidelityFX API headers (FSR 3 frame generation, runtime loaded from amd_fidelityfx_vk.dll)
+target_include_directories(CemuCafe PRIVATE "${CMAKE_SOURCE_DIR}/dependencies/FidelityFX-SDK/ffx-api/include")

@@ -1,6 +1,7 @@
 #include "../PPCState.h"
 #include "PPCInterpreterInternal.h"
 #include "PPCInterpreterHelper.h"
+#include "pcedition/PCProfiler.h"
 
 std::unordered_set<std::string> s_unsupportedHLECalls;
 
@@ -19,6 +20,7 @@ void PPCInterpreter_handleUnsupportedHLECall(PPCInterpreter_t* hCPU)
 
 static constexpr size_t HLE_TABLE_CAPACITY = 0x4000;
 HLECALL s_ppcHleTable[HLE_TABLE_CAPACITY]{};
+std::string s_ppcHleNames[HLE_TABLE_CAPACITY]; // Zelda on PC: names for the profiler
 sint32 s_ppcHleTableWriteIndex = 0;
 std::mutex s_ppcHleTableMutex;
 
@@ -39,9 +41,17 @@ HLEIDX PPCInterpreter_registerHLECall(HLECALL hleCall, std::string hleName)
 	}
 	cemu_assert(s_ppcHleTableWriteIndex < HLE_TABLE_CAPACITY);
 	s_ppcHleTable[s_ppcHleTableWriteIndex] = hleCall;
+	s_ppcHleNames[s_ppcHleTableWriteIndex] = hleName;
 	HLEIDX funcIndex = s_ppcHleTableWriteIndex;
 	s_ppcHleTableWriteIndex++;
 	return funcIndex;
+}
+
+const char* PPCInterpreter_getHLEName(HLEIDX funcIndex)
+{
+	if (funcIndex < 0 || funcIndex >= HLE_TABLE_CAPACITY)
+		return nullptr;
+	return s_ppcHleNames[funcIndex].c_str();
 }
 
 HLECALL PPCInterpreter_getHLECall(HLEIDX funcIndex)
@@ -67,6 +77,9 @@ void PPCInterpreter_virtualHLE(PPCInterpreter_t* hCPU, unsigned int opcode)
 		// os lib function
 		auto hleCall = PPCInterpreter_getHLECall(hleFuncId);
 		cemu_assert(hleCall);
+		const uint32 core = hCPU->spr.UPIR;
+		pce::Profiler::EnterHle(core, hleFuncId, hCPU->spr.LR);
 		hleCall(hCPU);
+		pce::Profiler::LeaveHle(core);
 	}
 }

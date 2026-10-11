@@ -22,6 +22,8 @@ void LatteCP_DebugPrintCmdBuffer(uint32be* bufferPtr, uint32 size);
 
 #define CP_TIMER_RECHECK	1024
 
+// Zelda on PC frame generation (LatteRenderTarget.cpp)
+
 //#define LATTE_CP_LOGGING
 
 typedef uint32be* LatteCMDPtr;
@@ -29,6 +31,7 @@ typedef uint32be* LatteCMDPtr;
 #define LatteSkipCMD(_nWords) cmd += (_nWords)
 
 void LatteThread_HandleOSScreen();
+void LatteRenderTarget_PCEIdlePresent();
 
 void LatteThread_Exit();
 
@@ -189,6 +192,7 @@ uint32 LatteCP_readU32Deprc()
 			LatteThread_Exit();
 
 		// still no command data available, do some other tasks
+		LatteRenderTarget_PCEIdlePresent();
 		LatteTiming_HandleTimedVsync();
 		LatteAsyncCommands_checkAndExecute();
 		std::this_thread::yield();

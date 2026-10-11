@@ -1,4 +1,8 @@
 #include "MainWindow.h"
+#include "pcedition/PCEdition.h"
+#include "pcedition/PCInput.h"
+#include "pcedition/PCOverlay.h"
+#include "pcedition/PCSettings.h"
 
 // subwindows
 #include "TitleManager.h"
@@ -322,6 +326,12 @@ MainWindow::MainWindow()
 
 	auto* main_sizer = new wxBoxSizer(wxVERTICAL);
     auto load_file = LaunchSettings::GetLoadFile();
+	if (pce::IsActive())
+	{
+		SetTitle(wxString::FromUTF8(pce::kGameTitle));
+		SetBackgroundColour(*wxBLACK);
+		load_file = pce::GetBaseTitlePath();
+	}
     auto load_title_id = LaunchSettings::GetLoadTitleID();
     bool quick_launch = false;
 
@@ -362,7 +372,7 @@ MainWindow::MainWindow()
 	m_last_mouse_move_time = std::chrono::steady_clock::now();
 
 	m_timer = new wxTimer(this, MAINFRAME_ID_TIMER1);
-	m_timer->Start(500);
+	m_timer->Start(pce::IsActive() ? 50 : 500);
 
 	LoadSettings();
 
@@ -381,6 +391,12 @@ MainWindow::MainWindow()
 
 	if (LaunchSettings::OpenDebuggerEnabled())
 		OpenPPCDebugger();
+
+	if (pce::IsActive())
+	{
+		SetIcon(wxICON(M_WND_ICON128));
+		SetFullScreen(pce::GetSettings().fullscreen && !pce::ForceWindowed());
+	}
 }
 
 MainWindow::~MainWindow()
@@ -433,11 +449,20 @@ void MainWindow::DestroyGameListAndStatusBar()
 
 wxString MainWindow::GetInitialWindowTitle()
 {
+	if (pce::IsActive())
+		return wxString::FromUTF8(pce::kGameTitle);
 	return BUILD_VERSION_WITH_NAME_STRING;
 }
 
 void MainWindow::OnClose(wxCloseEvent& event)
 {
+	if (pce::IsActive())
+	{
+		pce::Overlay::ReleaseForShutdown();
+		ClipCursor(nullptr);
+		ShowCursor(true);
+		Hide();
+	}
 	if (m_debugger_window)
 	{
 		m_debugger_window->CleanupForDestroy();
@@ -831,6 +856,30 @@ void MainWindow::TogglePadView()
 #endif
 WXLRESULT MainWindow::MSWWindowProc(WXUINT nMsg, WXWPARAM wParam, WXLPARAM lParam)
 {
+	if (pce::IsActive())
+	{
+		if (nMsg == WM_SYSCOMMAND)
+		{
+			const WPARAM cmd = wParam & 0xFFF0;
+			if (cmd == SC_KEYMENU || cmd == SC_SCREENSAVE || cmd == SC_MONITORPOWER)
+				return 0;
+		}
+		if (nMsg == WM_SETCURSOR && m_pce_cursor_captured && LOWORD(lParam) == HTCLIENT)
+		{
+			::SetCursor(nullptr);
+			return TRUE;
+		}
+		if (nMsg == WM_ACTIVATE && LOWORD(wParam) == WA_INACTIVE)
+		{
+			::ClipCursor(nullptr);
+			m_pce_cursor_captured = false;
+			ShowCursor(true);
+		}
+		else if (nMsg == WM_ACTIVATE)
+		{
+			CallAfter([this]() { UpdatePCECursor(); });
+		}
+	}
 	if (nMsg == WM_DEVICECHANGE)
 	{
 		if (wParam == DBT_DEVNODES_CHANGED)
@@ -1232,6 +1281,63 @@ void MainWindow::OnDebugViewTextureRelations(wxCommandEvent& event)
 	openTextureViewer(*this);
 }
 
+void MainWindow::UpdatePCECursor()
+{
+	// The OS cursor is pinned to a 2x2 px area in the middle of the game window while playing: it can never wander
+	// to another monitor or hover anything, and Raw Input still delivers the full mouse motion.
+	// Re-applied on every tick because Windows resets cursor clipping on several occasions.
+	HWND hwnd = GetHWND();
+	HWND fg = ::GetForegroundWindow();
+	// Some overlays (recording hotkeys, ...) briefly leave Windows without any foreground window and the game would stay
+	// without keyboard focus: when that lasts, take the focus back (only if the game had it before).
+	if (fg == nullptr)
+	{
+		const unsigned long long now = ::GetTickCount64();
+		if (m_pce_no_foreground_since == 0)
+			m_pce_no_foreground_since = now;
+		else if (m_pce_was_foreground && m_game_launched && now - m_pce_no_foreground_since > 700)
+		{
+			// Windows only lets the process that received the last input event take the foreground; a synthetic Alt
+			// tap counts as such input (the Alt menu itself is suppressed by the window, see SC_KEYMENU)
+			INPUT in[2]{};
+			in[0].type = INPUT_KEYBOARD;
+			in[0].ki.wVk = VK_MENU;
+			in[1] = in[0];
+			in[1].ki.dwFlags = KEYEVENTF_KEYUP;
+			::SendInput(2, in, sizeof(INPUT));
+			::SetForegroundWindow(hwnd);
+			::SetFocus(hwnd);
+			m_pce_no_foreground_since = 0;
+			fg = ::GetForegroundWindow();
+			cemuLog_log(LogType::Force, "PCE input: no foreground window, focus taken back ({})", fg == hwnd ? "ok" : "failed");
+		}
+	}
+	else
+	{
+		m_pce_no_foreground_since = 0;
+		m_pce_was_foreground = fg == hwnd;
+	}
+	const bool foreground = fg == hwnd;
+	const bool capture = m_game_launched && foreground && pce::Input::WantsCursorCaptured();
+	if (capture)
+	{
+		RECT rc;
+		::GetClientRect(hwnd, &rc);
+		POINT c{(rc.left + rc.right) / 2, (rc.top + rc.bottom) / 2};
+		::ClientToScreen(hwnd, &c);
+		RECT clip{c.x - 1, c.y - 1, c.x + 1, c.y + 1};
+		::ClipCursor(&clip);
+		ShowCursor(false);
+		m_pce_cursor_captured = true;
+	}
+	else if (m_pce_cursor_captured)
+	{
+		::ClipCursor(nullptr);
+		ShowCursor(true);
+		m_pce_cursor_captured = false;
+	}
+}
+
 void MainWindow::ShowCursor(bool state)
 {
 	#if BOOST_OS_WINDOWS
@@ -1391,7 +1497,8 @@ void MainWindow::OnMouseMove(wxMouseEvent& event)
 
 	m_last_mouse_move_time = std::chrono::steady_clock::now();
 	m_mouse_position = wxGetMousePosition();
-	ShowCursor(true);
+	if (!pce::IsActive())
+		ShowCursor(true);
 
 	auto& instance = InputManager::instance();
 	std::unique_lock lock(instance.m_main_mouse.m_mutex);
@@ -1485,6 +1592,12 @@ void MainWindow::OnKeyDown(wxKeyEvent& event)
     if (event.AltDown() && event.GetKeyCode() == WXK_F4)
     {
         Close(true);
+    }
+    else if (pce::IsActive() && event.AltDown() && (event.GetKeyCode() == WXK_RETURN || event.GetKeyCode() == WXK_NUMPAD_ENTER))
+    {
+        const bool fs = !IsFullScreen();
+        SetFullScreen(fs);
+        pce::UpdateSettings([fs](pce::Settings& s) { s.fullscreen = fs; });
     }
 #endif
     else
@@ -1594,6 +1707,8 @@ void MainWindow::CreateCanvas()
 {
     // create panel for canvas
     m_game_panel = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxTAB_TRAVERSAL | wxNO_BORDER | wxWANTS_CHARS);
+	if (pce::IsActive())
+		m_game_panel->SetBackgroundColour(*wxBLACK);
     auto* sizer = new wxBoxSizer(wxVERTICAL);
 
     // shouldn't be needed, but who knows
@@ -1752,6 +1867,22 @@ void MainWindow::OnMouseWheel(wxMouseEvent& event)
 
 void MainWindow::SetFullScreen(bool state)
 {
+	if (pce::IsActive())
+	{
+		g_window_info.is_fullscreen = state;
+		if (m_fullscreenMenuItem)
+			m_fullscreenMenuItem->Check(state);
+		this->ShowFullScreen(state, wxFULLSCREEN_ALL);
+		m_menu_visible = false;
+		if (!state)
+		{
+			// windowed: 80% of the desktop, centered
+			wxRect desk = GetDesktopRect();
+			SetClientSize(desk.GetWidth() * 4 / 5, desk.GetHeight() * 4 / 5);
+			Centre();
+		}
+		return;
+	}
 	// only update config entry if we dont't have launch parameters
 	if (!LaunchSettings::FullscreenEnabled().has_value())
 	{
@@ -1854,6 +1985,11 @@ bool MainWindow::IsMenuHidden() const
 
 void MainWindow::OnTimer(wxTimerEvent& event)
 {
+	if (pce::IsActive())
+	{
+		UpdatePCECursor();
+		return;
+	}
 	if(m_update_available.valid() && future_is_ready(m_update_available))
 	{
 		if(m_update_available.get())
@@ -2405,6 +2541,11 @@ void MainWindow::RecreateMenu()
 
 	SetMenuBar(m_menuBar);
 	m_menu_visible = true;
+	if (pce::IsActive())
+	{
+		SetMenuBar(nullptr); // keep the menu objects alive (item pointers are used elsewhere) but never show them
+		m_menu_visible = false;
+	}
 
 	if (m_game_launched)
 	{

@@ -153,6 +153,7 @@ void LatteTiming_NotifyHostVSync()
 }
 
 // handle timed vsync event
+
 void LatteTiming_HandleTimedVsync()
 {
 	// simulate VSync

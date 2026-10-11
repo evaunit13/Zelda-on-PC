@@ -19,6 +19,7 @@
 #endif
 
 #include "wxgui/wxgui.h"
+#include "pcedition/PCEdition.h"
 #include "wxgui/CemuApp.h"
 #include "wxgui/MainWindow.h"
 #include "Cafe/HW/Latte/Core/Latte.h"
@@ -73,6 +74,16 @@ WindowSystem::WindowInfo& WindowSystem::GetWindowInfo()
 
 void WindowSystem::UpdateWindowTitles(bool isIdle, bool isLoading, double fps)
 {
+	if (pce::IsActive())
+	{
+		static bool sTitleSet = false;
+		if (!sTitleSet && g_mainFrame)
+		{
+			g_mainFrame->AsyncSetTitle(pce::kGameTitle);
+			sTitleSet = true;
+		}
+		return;
+	}
 	std::string windowText;
 	windowText = BUILD_VERSION_WITH_NAME_STRING;
 

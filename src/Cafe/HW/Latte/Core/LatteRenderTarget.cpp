@@ -1,9 +1,21 @@
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
+#include <fstream>
 
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/HW/Latte/Core/LatteDraw.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
 #include "Cafe/HW/Latte/Core/LatteOverlay.h"
+#include "pcedition/PCEdition.h"
+#include "pcedition/PCUI.h"
+#include "pcedition/PCOverlay.h"
+#include "pcedition/PCSettings.h"
+#include "pcedition/PCInput.h"
+
+// Zelda on PC: last presented TV image, re-presented (with the settings menu) while the game is paused
+static LatteTextureView* s_pceLastTVView = nullptr;
+static std::chrono::steady_clock::time_point s_pceLastPresent{};
+
+void LatteRenderTarget_copyToBackbuffer(LatteTextureView* textureView, bool isPadView);
 #include "Cafe/HW/Latte/Core/LatteBufferCache.h"
 #include "Cafe/HW/Latte/Core/LatteTexture.h"
 #include "Cafe/HW/Latte/Core/LatteCachedFBO.h"
@@ -677,6 +689,578 @@ void LatteRenderTarget_trackUpdates()
 	}
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// PC Edition: frame statistics for the FPS counter (real game frames and frames shown per second; with AMD FSR 3 frame
+// generation the shown rate comes from its swapchain).
+// ---------------------------------------------------------------------------------------------------------------------
+static void LatteFSR_AfterBackbuffer(sint32 x, sint32 y, sint32 w, sint32 h);
+static void LatteProbe_OnPresent();
+bool LatteFSR_GetStats(float& shownFps);
+
+namespace
+{
+	struct
+	{
+		uint64 statStart = 0;
+		uint32 statReal = 0, statShown = 0;
+		float baseFps = 0.0f, shownFps = 0.0f;
+		uint64 presentTimes[256]{};
+		uint32 presentCount = 0;
+	} s_frameStats;
+
+	void FrameStats_Count(bool real, bool shown)
+	{
+		const uint64 now = HighResolutionTimer::now().getTick();
+		const uint64 freq = HighResolutionTimer::getFrequency();
+		if (s_frameStats.statStart == 0)
+			s_frameStats.statStart = now;
+		s_frameStats.statReal += real ? 1 : 0;
+		s_frameStats.statShown += shown ? 1 : 0;
+		if (shown)
+			s_frameStats.presentTimes[(s_frameStats.presentCount++) & 255] = now;
+		if (now - s_frameStats.statStart >= freq)
+		{
+			const double secs = (double)(now - s_frameStats.statStart) / (double)freq;
+			s_frameStats.baseFps = (float)(s_frameStats.statReal / secs);
+			s_frameStats.shownFps = (float)(s_frameStats.statShown / secs);
+			s_frameStats.statReal = s_frameStats.statShown = 0;
+			s_frameStats.statStart = now;
+		}
+	}
+}
+
+void LatteFrameGen_GetStats(float& baseFps, float& shownFps, bool& generating)
+{
+	baseFps = s_frameStats.baseFps;
+	shownFps = s_frameStats.shownFps;
+	generating = false;
+	float fsrShown;
+	if (LatteFSR_GetStats(fsrShown))
+	{
+		shownFps = fsrShown;
+		generating = fsrShown > baseFps * 1.2f;
+	}
+}
+
+// present pacing over the last 255 presents: mean / standard deviation / 95th percentile of the intervals in ms
+void LatteFrameGen_GetPacing(double& meanMs, double& stdMs, double& p95Ms)
+{
+	meanMs = stdMs = p95Ms = 0.0;
+	const uint32 n = std::min<uint32>(s_frameStats.presentCount, 256);
+	if (n < 8)
+		return;
+	const double freq = (double)HighResolutionTimer::getFrequency();
+	std::vector<double> d;
+	for (uint32 i = 1; i < n; i++)
+	{
+		const uint32 a = (s_frameStats.presentCount - i - 1) & 255, b = (s_frameStats.presentCount - i) & 255;
+		d.push_back((double)(s_frameStats.presentTimes[b] - s_frameStats.presentTimes[a]) * 1000.0 / freq);
+	}
+	for (double v : d)
+		meanMs += v;
+	meanMs /= d.size();
+	for (double v : d)
+		stdMs += (v - meanMs) * (v - meanMs);
+	stdMs = std::sqrt(stdMs / d.size());
+	std::sort(d.begin(), d.end());
+	p95Ms = d[(size_t)(d.size() * 0.95)];
+}
+
+// regular present of the real frame (GX2SwapScanBuffers)
+static void LatteFrameGen_SwapRealFrame()
+{
+	g_renderer->SwapBuffers(true, true);
+	LatteProbe_OnPresent();
+	FrameStats_Count(false, true);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Zelda on PC dev tool: frame trace. Records one frame (between two TV presents): every change of render targets /
+// shaders / vertex shader uniform blocks with its draw count, plus the contents of the uniform blocks.
+// ---------------------------------------------------------------------------------------------------------------------
+namespace
+{
+	struct
+	{
+		int state = 0; // 0 idle, 1 armed (starts at the next present), 2 recording
+		std::string path;
+		std::vector<std::string> lines;
+		std::string lastKey;
+		uint32 groupDraws = 0;
+		std::unordered_map<uint32, std::vector<uint8>> blocks;
+	} s_trace;
+
+	std::string TraceView(LatteTextureView* v)
+	{
+		if (!v)
+			return "-";
+		auto* t = v->baseTexture;
+		return fmt::format("{:08x}:{}x{}:f{:x}:s{}m{}", t->physAddress, t->width, t->height, (uint32)t->format, v->firstSlice, v->firstMip);
+	}
+
+	void TraceFlushGroup()
+	{
+		if (!s_trace.lastKey.empty() && s_trace.groupDraws)
+			s_trace.lines.push_back(fmt::format("draws={} {}", s_trace.groupDraws, s_trace.lastKey));
+		s_trace.groupDraws = 0;
+	}
+
+	void TraceFrameBoundary()
+	{
+		if (s_trace.state == 1)
+		{
+			s_trace.state = 2;
+			s_trace.lines.clear();
+			s_trace.blocks.clear();
+			s_trace.lastKey.clear();
+			s_trace.groupDraws = 0;
+			return;
+		}
+		if (s_trace.state != 2)
+			return;
+		TraceFlushGroup();
+		std::ofstream f(_utf8ToPath(s_trace.path), std::ios::trunc);
+		for (auto& l : s_trace.lines)
+			f << l << "\n";
+		f << "== uniform blocks\n";
+		for (auto& [addr, data] : s_trace.blocks)
+		{
+			f << fmt::format("UB {:08x} {}:", addr, data.size());
+			for (size_t i = 0; i + 4 <= data.size(); i += 4)
+			{
+				uint32 v = *(uint32*)(data.data() + i); // uniform blocks are stored little endian (GX2 endian swaps them)
+				f << fmt::format(" {:.7g}", *(float*)&v);
+			}
+			f << "\n";
+		}
+		s_trace.state = 0;
+	}
+}
+
+void LatteFrameTrace_Request(const std::string& path)
+{
+	s_trace.path = path;
+	s_trace.state = 1;
+}
+
+void LatteFrameTrace_OnDraw()
+{
+	if (s_trace.state != 2) [[likely]]
+		return;
+	std::string key;
+	for (uint32 i = 0; i < 8; i++)
+		if (auto* v = LatteMRT::GetColorAttachment(i))
+			key += fmt::format("c{}={} ", i, TraceView(v));
+	key += fmt::format("d={} ", TraceView(LatteMRT::GetDepthAttachment()));
+	auto* vs = LatteSHRC_GetActiveVertexShader();
+	auto* ps = LatteSHRC_GetActivePixelShader();
+	key += fmt::format("vs={:016x} ps={:016x} ub=", vs ? vs->baseHash : 0, ps ? ps->baseHash : 0);
+	for (uint32 i = 0; i < 16; i++)
+	{
+		const MPTR addr = LatteGPUState.contextRegister[mmSQ_VTX_UNIFORM_BLOCK_START + i * 7 + 0];
+		const uint32 size = LatteGPUState.contextRegister[mmSQ_VTX_UNIFORM_BLOCK_START + i * 7 + 1] + 1;
+		if (!addr || size <= 1)
+			continue;
+		key += fmt::format("{}:{:08x}:{} ", i, addr, size);
+		if (!s_trace.blocks.contains(addr) && s_trace.blocks.size() < 2048)
+		{
+			const uint32 n = std::min<uint32>(size, 1024);
+			std::vector<uint8> data(n);
+			memcpy(data.data(), memory_base + addr, n);
+			s_trace.blocks[addr] = std::move(data);
+		}
+	}
+	if (key != s_trace.lastKey)
+	{
+		TraceFlushGroup();
+		s_trace.lastKey = key;
+	}
+	s_trace.groupDraws++;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Zelda on PC: inputs for AMD FSR 3 frame generation, captured while the frame is drawn:
+//  - camera: the view/projection uniform block (vertex shader slot 1) of the scene G-buffer pass (several color targets +
+//    a depth buffer of TV size). Layout (floats): view 3x4 @0, viewProj 4x4 @12, proj 4x4 @28, invView 3x4 @44,
+//    near @56, far @57, aspect @62, render size @72 (row major).
+//  - HUD-less color + scene depth: snapshot right before the first UI (nw::lyt, slot 1 block of 288 bytes) draw into the
+//    TV color buffer, or at the end of the frame if there was no UI.
+// ---------------------------------------------------------------------------------------------------------------------
+bool g_latteFsrActive = false; // fast check for the draw hook
+
+namespace
+{
+	struct
+	{
+		bool wanted = false;         // setting / dev request
+		bool cameraValid = false;
+		float cam[96]{};
+		double prevVP[16]{};
+		bool prevValid = false;
+		bool snapshotDone = false;
+		// scene depth buffer (looked up again by address when used, the game reuses its memory for UI targets)
+		MPTR depthAddr = 0;
+		sint32 depthW = 0, depthH = 0, depthPitch = 0;
+		Latte::E_GX2SURFFMT depthFormat{};
+		// TV color buffer (from the previous present)
+		MPTR tvAddr = 0;
+		Latte::E_GX2SURFFMT tvFormat{};
+		sint32 tvW = 0, tvH = 0;
+		uint32 mvFlags = 1; // 1 = flip y
+		uint64 settingsRev = ~0ull;
+		bool devForce = false;
+		uint32 frames = 0, snapshots = 0, cameras = 0, prepared = 0;
+		// frame handed to FSR after the backbuffer is drawn
+		bool ready = false;
+		float frameCam[96]{};
+		uint64 lastFrameTick = 0;
+		float frameTimeMs = 16.6f;
+		bool reset = true;
+		float lastPos[3]{};
+		uint32 debugFlags = 0;
+		// displayed frame rate (FSR swapchain present count)
+		uint64 statStart = 0, statPresents = 0;
+		float shownFps = 0.0f;
+	} s_fsr;
+
+	void Mat4FromRows(const float* src, double* dst)
+	{
+		for (int i = 0; i < 16; i++)
+			dst[i] = src[i];
+	}
+
+	bool Mat4Inverse(const double* m, double* inv)
+	{
+		double a[4][8];
+		for (int r = 0; r < 4; r++)
+			for (int c = 0; c < 8; c++)
+				a[r][c] = c < 4 ? m[r * 4 + c] : (c - 4 == r ? 1.0 : 0.0);
+		for (int c = 0; c < 4; c++)
+		{
+			int p = c;
+			for (int r = c + 1; r < 4; r++)
+				if (std::fabs(a[r][c]) > std::fabs(a[p][c]))
+					p = r;
+			if (std::fabs(a[p][c]) < 1e-12)
+				return false;
+			if (p != c)
+				for (int k = 0; k < 8; k++)
+					std::swap(a[p][k], a[c][k]);
+			const double d = a[c][c];
+			for (int k = 0; k < 8; k++)
+				a[c][k] /= d;
+			for (int r = 0; r < 4; r++)
+			{
+				if (r == c)
+					continue;
+				const double f = a[r][c];
+				for (int k = 0; k < 8; k++)
+					a[r][k] -= f * a[c][k];
+			}
+		}
+		for (int r = 0; r < 4; r++)
+			for (int c = 0; c < 4; c++)
+				inv[r * 4 + c] = a[r][c + 4];
+		return true;
+	}
+
+	void Mat4Mul(const double* a, const double* b, double* out)
+	{
+		for (int r = 0; r < 4; r++)
+			for (int c = 0; c < 4; c++)
+			{
+				double s = 0;
+				for (int k = 0; k < 4; k++)
+					s += a[r * 4 + k] * b[k * 4 + c];
+				out[r * 4 + c] = s;
+			}
+	}
+
+	LatteTextureView* FSR_LookupDepth()
+	{
+		if (!s_fsr.depthAddr)
+			return nullptr;
+		sint32 searchIndex = 0;
+		while (LatteTextureView* v = LatteTC_LookupTextureByData(s_fsr.depthAddr, s_fsr.depthW, s_fsr.depthH, s_fsr.depthPitch, 0, 1, 0, 1, &searchIndex))
+		{
+			if (v->baseTexture->isDepth && v->baseTexture->format == s_fsr.depthFormat)
+				return v;
+		}
+		return nullptr;
+	}
+
+	void FSR_Snapshot(LatteTextureView* color)
+	{
+		LatteTextureView* depth = FSR_LookupDepth();
+		if (!color || !depth)
+			return;
+		if (g_renderer->FSR_CaptureSnapshot(color, depth))
+		{
+			s_fsr.snapshotDone = true;
+			s_fsr.snapshots++;
+		}
+	}
+}
+
+void LatteFSR_OnDraw(bool isFirstOfPass)
+{
+	// camera of the scene pass
+	if (!s_fsr.cameraValid)
+	{
+		LatteTextureView* d = LatteMRT::GetDepthAttachment();
+		if (d && LatteMRT::GetColorAttachment(1) && s_fsr.tvW && d->baseTexture->width == s_fsr.tvW && d->baseTexture->height == s_fsr.tvH)
+		{
+			const MPTR addr = LatteGPUState.contextRegister[mmSQ_VTX_UNIFORM_BLOCK_START + 1 * 7 + 0];
+			const uint32 size = LatteGPUState.contextRegister[mmSQ_VTX_UNIFORM_BLOCK_START + 1 * 7 + 1] + 1;
+			if (addr && size >= sizeof(s_fsr.cam))
+			{
+				memcpy(s_fsr.cam, memory_base + addr, sizeof(s_fsr.cam)); // uniform blocks are little endian
+				s_fsr.cameraValid = true;
+				s_fsr.cameras++;
+				auto* t = d->baseTexture;
+				s_fsr.depthAddr = t->physAddress;
+				s_fsr.depthW = t->width;
+				s_fsr.depthH = t->height;
+				s_fsr.depthPitch = t->pitch;
+				s_fsr.depthFormat = t->format;
+			}
+		}
+		return;
+	}
+	// HUD-less snapshot right before the first UI draw into the TV buffer
+	if (s_fsr.snapshotDone || !isFirstOfPass)
+		return;
+	LatteTextureView* c0 = LatteMRT::GetColorAttachment(0);
+	if (!c0 || c0->baseTexture->physAddress != s_fsr.tvAddr || c0->baseTexture->format != s_fsr.tvFormat)
+		return;
+	const uint32 ubSize = LatteGPUState.contextRegister[mmSQ_VTX_UNIFORM_BLOCK_START + 1 * 7 + 1] + 1;
+	if (ubSize == 288)
+		FSR_Snapshot(c0);
+}
+
+// end of frame (TV present), before the backbuffer is drawn
+// latency probe: input (first VPAD read turning the camera) -> first frame with the camera moved -> its present
+extern std::atomic<bool> g_pceProbeArmed;
+extern std::atomic<uint64> g_pceProbeInputTick;
+namespace
+{
+	struct
+	{
+		float lastFwd[3]{};
+		uint64 frameTick = 0, presentTick = 0;
+		uint32 framesSinceInput = 0;
+		bool waitPresent = false;
+	} s_probe;
+}
+
+static void LatteProbe_OnCamera(const float* cam)
+{
+	const float fwd[3] = {cam[8], cam[9], cam[10]};
+	const float dot = fwd[0] * s_probe.lastFwd[0] + fwd[1] * s_probe.lastFwd[1] + fwd[2] * s_probe.lastFwd[2];
+	memcpy(s_probe.lastFwd, fwd, sizeof(fwd));
+	if (!g_pceProbeArmed.load() || g_pceProbeInputTick.load() == 0 || s_probe.frameTick)
+		return;
+	s_probe.framesSinceInput++;
+	if (dot < 0.999999f)
+	{
+		s_probe.frameTick = HighResolutionTimer::now().getTick();
+		s_probe.waitPresent = true;
+	}
+}
+
+static void LatteProbe_OnPresent()
+{
+	if (s_probe.waitPresent)
+	{
+		s_probe.presentTick = HighResolutionTimer::now().getTick();
+		s_probe.waitPresent = false;
+	}
+}
+
+std::string LatteProbe_Command(const std::vector<std::string>& a)
+{
+	if (a.size() > 2 && a[2] == "arm")
+	{
+		s_probe.frameTick = s_probe.presentTick = 0;
+		s_probe.framesSinceInput = 0;
+		s_probe.waitPresent = false;
+		g_pceProbeInputTick = 0;
+		g_pceProbeArmed = true;
+		return "armed";
+	}
+	const double f = (double)HighResolutionTimer::getFrequency() / 1000.0;
+	const uint64 t0 = g_pceProbeInputTick.load();
+	if (!t0 || !s_probe.frameTick)
+		return fmt::format("pending (input {})", t0 != 0);
+	g_pceProbeArmed = false;
+	return fmt::format("input->camera frame end {:.1f} ms ({} frames) | input->present {:.1f} ms", (double)(s_probe.frameTick - t0) / f, s_probe.framesSinceInput,
+		s_probe.presentTick ? (double)(s_probe.presentTick - t0) / f : -1.0);
+}
+
+static void LatteFSR_OnFrameEnd(LatteTextureView* tvView)
+{
+	if (pce::GetSettingsRevision() != s_fsr.settingsRev)
+	{
+		s_fsr.settingsRev = pce::GetSettingsRevision();
+		s_fsr.wanted = pce::IsActive() && pce::GetSettings().frameGeneration == 1;
+		g_renderer->FSR_SetWanted(s_fsr.wanted);
+	}
+	const bool active = (s_fsr.wanted || s_fsr.devForce) && g_renderer->GetType() == RendererAPI::Vulkan && !(pce::IsActive() && pce::Overlay::IsGamePaused());
+	if (active && s_fsr.cameraValid)
+	{
+		if (!s_fsr.snapshotDone)
+			FSR_Snapshot(tvView); // no UI this frame
+		double cur[16];
+		Mat4FromRows(s_fsr.cam + 12, cur);
+		if (s_fsr.snapshotDone)
+		{
+			double reproj[16];
+			double inv[16];
+			if (s_fsr.prevValid && Mat4Inverse(cur, inv))
+				Mat4Mul(s_fsr.prevVP, inv, reproj);
+			else
+			{
+				for (int i = 0; i < 16; i++)
+					reproj[i] = (i % 5) == 0 ? 1.0 : 0.0;
+			}
+			float rf[16];
+			for (int i = 0; i < 16; i++)
+				rf[i] = (float)reproj[i];
+			g_renderer->FSR_BuildMotionVectors(rf, s_fsr.mvFlags);
+		}
+		LatteProbe_OnCamera(s_fsr.cam);
+		// camera for FSR (used once the backbuffer is drawn)
+		const uint64 now = HighResolutionTimer::now().getTick();
+		if (s_fsr.lastFrameTick)
+			s_fsr.frameTimeMs = (float)((double)(now - s_fsr.lastFrameTick) * 1000.0 / (double)HighResolutionTimer::getFrequency());
+		s_fsr.lastFrameTick = now;
+		memcpy(s_fsr.frameCam, s_fsr.cam, sizeof(s_fsr.cam));
+		const float pos[3] = {s_fsr.cam[47], s_fsr.cam[51], s_fsr.cam[55]};
+		const float dx = pos[0] - s_fsr.lastPos[0], dy = pos[1] - s_fsr.lastPos[1], dz = pos[2] - s_fsr.lastPos[2];
+		if (!s_fsr.prevValid || dx * dx + dy * dy + dz * dz > 15.0f * 15.0f || s_fsr.frameTimeMs > 200.0f)
+			s_fsr.reset = true; // camera cut / teleport / hitch: no interpolation across it
+		memcpy(s_fsr.lastPos, pos, sizeof(pos));
+		s_fsr.ready = s_fsr.snapshotDone;
+		memcpy(s_fsr.prevVP, cur, sizeof(cur));
+		s_fsr.prevValid = true;
+	}
+	else if (!active)
+	{
+		s_fsr.prevValid = false;
+		s_fsr.ready = false;
+		s_fsr.lastFrameTick = 0;
+	}
+	s_fsr.frames++;
+	// next frame
+	s_fsr.cameraValid = false;
+	s_fsr.snapshotDone = false;
+	auto* t = tvView->baseTexture;
+	s_fsr.tvAddr = t->physAddress;
+	s_fsr.tvFormat = t->format;
+	s_fsr.tvW = t->width;
+	s_fsr.tvH = t->height;
+	g_latteFsrActive = active;
+}
+
+// the backbuffer shows the real frame (no overlay yet): hand the frame to FSR 3 frame generation
+static void LatteFSR_AfterBackbuffer(sint32 x, sint32 y, sint32 w, sint32 h)
+{
+	if (!g_renderer->FSR_IsRunning())
+		return;
+	// displayed frame rate
+	const uint64 now = HighResolutionTimer::now().getTick();
+	const uint64 freq = HighResolutionTimer::getFrequency();
+	if (s_fsr.statStart == 0 || now - s_fsr.statStart >= freq)
+	{
+		const uint64 presents = g_renderer->FSR_PresentCount();
+		if (s_fsr.statStart)
+			s_fsr.shownFps = (float)((double)(presents - s_fsr.statPresents) * (double)freq / (double)(now - s_fsr.statStart));
+		s_fsr.statStart = now;
+		s_fsr.statPresents = presents;
+	}
+	if (!s_fsr.ready)
+	{
+		g_renderer->FSR_DisableGeneration();
+		s_fsr.reset = true;
+		return;
+	}
+	s_fsr.ready = false;
+	const float* c = s_fsr.frameCam;
+	Renderer::FSRFrameParams p{};
+	p.cameraNear = c[56];
+	p.cameraFar = c[57];
+	p.fovY = 2.0f * std::atan(1.0f / std::max(c[33], 1e-4f)); // projection row 1, column 1
+	p.position[0] = c[47];
+	p.position[1] = c[51];
+	p.position[2] = c[55];
+	// view matrix rows = camera axes in world space (looking down -z)
+	for (int i = 0; i < 3; i++)
+	{
+		p.right[i] = c[0 + i];
+		p.up[i] = c[4 + i];
+		p.forward[i] = -c[8 + i];
+	}
+	p.frameTimeMs = s_fsr.frameTimeMs;
+	p.reset = s_fsr.reset;
+	p.debugFlags = s_fsr.debugFlags;
+	p.imageX = x;
+	p.imageY = y;
+	p.imageWidth = w;
+	p.imageHeight = h;
+	if (g_renderer->FSR_PrepareFrame(p))
+	{
+		s_fsr.prepared++;
+		s_fsr.reset = false;
+	}
+}
+
+bool LatteFSR_GetStats(float& shownFps)
+{
+	if (!g_renderer || !g_renderer->FSR_IsRunning())
+		return false;
+	shownFps = s_fsr.shownFps;
+	return true;
+}
+
+std::string LatteFSR_Command(const std::vector<std::string>& a)
+{
+	if (a.size() > 1 && a[1] == "probe")
+		return LatteProbe_Command(a);
+	if (a.size() > 2 && a[1] == "dump")
+	{
+		g_renderer->FSR_RequestDump(a[2], a.size() > 3 ? std::stoi(a[3]) : 1);
+		return "ok";
+	}
+	if (a.size() > 2 && a[1] == "flags")
+	{
+		s_fsr.mvFlags = (uint32)std::stoul(a[2], nullptr, 0);
+		return "ok";
+	}
+	if (a.size() > 2 && a[1] == "force")
+	{
+		s_fsr.devForce = a[2] != "0";
+		return "ok";
+	}
+	if (a.size() > 2 && a[1] == "debug")
+	{
+		s_fsr.debugFlags = (uint32)std::stoul(a[2], nullptr, 0);
+		return "ok";
+	}
+	return fmt::format("frames {} cameras {} snapshots {} prepared {} active {} running {} shown {:.1f} flags {} | near {} far {} aspect {} size {}x{}", s_fsr.frames,
+		s_fsr.cameras, s_fsr.snapshots, s_fsr.prepared, g_latteFsrActive, g_renderer->FSR_IsRunning(), s_fsr.shownFps, s_fsr.mvFlags, s_fsr.cam[56], s_fsr.cam[57],
+		s_fsr.cam[62], s_fsr.cam[72], s_fsr.cam[73]);
+}
+
+void LatteRenderTarget_PCEIdlePresent()
+{
+	if (!pce::IsActive() || !pce::Overlay::IsGamePaused() || !s_pceLastTVView)
+		return;
+	if (std::chrono::steady_clock::now() - s_pceLastPresent < std::chrono::milliseconds(15))
+		return;
+	LatteRenderTarget_copyToBackbuffer(s_pceLastTVView, false);
+	g_renderer->SwapBuffers(true, false);
+}
+
 void LatteRenderTarget_itHLESwapScanBuffer()
 {
 	performanceMonitor.cycle[performanceMonitor.cycleIndex].frameCounter++;
@@ -685,7 +1269,7 @@ void LatteRenderTarget_itHLESwapScanBuffer()
 	LattePerformanceMonitor_frameEnd();
 	FrameBenchmarkHelper::FrameEnd();
 	LatteGPUState.frameCounter++;
-	g_renderer->SwapBuffers(true, true);
+	LatteFrameGen_SwapRealFrame();
 
 	catchOpenGLError();
 	performanceMonitor.gpuTime_frameTime.beginMeasuring();
@@ -866,6 +1450,16 @@ void LatteRenderTarget_getScreenImageArea(sint32* x, sint32* y, sint32* width, s
 
 void LatteRenderTarget_copyToBackbuffer(LatteTextureView* textureView, bool isPadView)
 {
+	if (!isPadView)
+	{
+		TraceFrameBoundary();
+		LatteFSR_OnFrameEnd(textureView);
+	}
+	if (!isPadView)
+	{
+		s_pceLastTVView = textureView;
+		s_pceLastPresent = std::chrono::steady_clock::now();
+	}
 	// make sure texture is updated to latest data in cache
 	LatteTexture_UpdateDataToLatest(textureView->baseTexture);
 	// mark source texture as still in use
@@ -965,6 +1559,10 @@ void LatteRenderTarget_copyToBackbuffer(LatteTextureView* textureView, bool isPa
 	cemu_assert(shader);
 	g_renderer->DrawBackbufferQuad(textureView, shader, filter==LatteTextureView::MagFilter::kLinear, imageX, imageY, imageWidth, imageHeight, isPadView, clearBackground);
 	g_renderer->HandleScreenshotRequest(textureView, isPadView);
+	if (!isPadView)
+		LatteFSR_AfterBackbuffer(imageX, imageY, imageWidth, imageHeight);
+	if (!isPadView && !(pce::IsActive() && pce::Overlay::IsGamePaused()))
+		FrameStats_Count(true, false); // a new game frame (a paused frame is only shown again)
 	if (!g_renderer->ImguiBegin(!isPadView))
 		return;
 	swkbd_render(!isPadView);
@@ -976,6 +1574,9 @@ void LatteRenderTarget_copyToBackbuffer(LatteTextureView* textureView, bool isPa
 void LatteRenderTarget_itHLECopyColorBufferToScanBuffer(MPTR colorBufferPtr, uint32 colorBufferWidth, uint32 colorBufferHeight, uint32 colorBufferSliceIndex, uint32 colorBufferFormat, uint32 colorBufferPitch, Latte::E_HWTILEMODE colorBufferTilemode, uint32 colorBufferSwizzle, uint32 renderTarget)
 {
 	cemu_assert_debug(colorBufferSliceIndex == 0); // todo - support for non-zero slice
+	// Zelda on PC: the GPU thread reached the TV image of a frame (see pce::UI::OnGameFrame)
+	if ((renderTarget & RENDER_TARGET_TV) && pce::IsActive())
+		pce::UI::OnGpuFrame();
 	LatteTextureView* texView = LatteTC_GetTextureSliceViewOrTryCreate(colorBufferPtr, MPTR_NULL, (Latte::E_GX2SURFFMT)colorBufferFormat, colorBufferTilemode, colorBufferWidth, colorBufferHeight, 1, colorBufferPitch, colorBufferSwizzle, 0, 0, true);
 	if (!texView)
 	{
@@ -991,8 +1592,8 @@ void LatteRenderTarget_itHLECopyColorBufferToScanBuffer(MPTR colorBufferPtr, uin
 		return {pressed && !toggle, pressed && toggle};
 	};
 
-	const bool tabPressed = WindowSystem::IsKeyDown(WindowSystem::PlatformKeyCodes::TAB);
-	const bool ctrlPressed = WindowSystem::IsKeyDown(WindowSystem::PlatformKeyCodes::LCONTROL);
+	const bool tabPressed = !pce::IsActive() && WindowSystem::IsKeyDown(WindowSystem::PlatformKeyCodes::TAB);
+	const bool ctrlPressed = !pce::IsActive() && WindowSystem::IsKeyDown(WindowSystem::PlatformKeyCodes::LCONTROL);
 	const auto [vpad0Active, vpad0Toggle] = getVPADScreenActive(0);
 	const auto [vpad1Active, vpad1Toggle] = getVPADScreenActive(1);
 

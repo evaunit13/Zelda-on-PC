@@ -647,6 +647,64 @@ void debugger_handleLoggingBreakpoint(PPCInterpreter_t* hCPU, DebuggerBreakpoint
 		return fmt::format("{}", hCPU->fpr[regNum].fpr);
 	});
 
+	// String placeholders (PC Edition dev bridge): {sX} / {sX@OFF} = char* at gpr[X]+OFF, {wX} / {wX@OFF} = UTF-16BE
+	auto replaceStrings = [&](char kind) {
+		const std::string prefix = std::string("{") + kind;
+		size_t pos = 0;
+		while ((pos = comment.find(prefix, pos)) != std::string::npos)
+		{
+			size_t endPos = comment.find('}', pos);
+			if (endPos == std::string::npos)
+				break;
+			std::string spec = comment.substr(pos + 2, endPos - pos - 2);
+			size_t at = spec.find('@');
+			uint32 reg = 0, off = 0;
+			try
+			{
+				reg = (uint32)std::stoul(spec.substr(0, at));
+				if (at != std::string::npos)
+					off = (uint32)std::stoul(spec.substr(at + 1), nullptr, 0);
+			}
+			catch (...)
+			{
+				pos = endPos + 1;
+				continue;
+			}
+			if (reg >= 32)
+			{
+				pos = endPos + 1;
+				continue;
+			}
+			uint32 a = hCPU->gpr[reg] + off;
+			std::string r;
+			for (uint32 i = 0; i < 64; i++)
+			{
+				if (kind == 's')
+				{
+					if (!memory_isAddressRangeAccessible(a + i, 1))
+						break;
+					char ch = (char)memory_readU8(a + i);
+					if (ch == 0)
+						break;
+					r.push_back(ch >= 0x20 && ch < 0x7F ? ch : '?');
+				}
+				else
+				{
+					if (!memory_isAddressRangeAccessible(a + i * 2, 2))
+						break;
+					uint16 ch = memory_readU16(a + i * 2);
+					if (ch == 0)
+						break;
+					r += (ch >= 0x20 && ch < 0x7F) ? std::string(1, (char)ch) : fmt::format("<{:04X}>", ch);
+				}
+			}
+			comment.replace(pos, endPos - pos + 1, r);
+			pos += r.length();
+		}
+	};
+	replaceStrings('s');
+	replaceStrings('w');
+
 	std::string logName = "Breakpoint '" + comment + "'";
 	std::string logContext = fmt::format("Thread: {:08x} LR: 0x{:08x}", MEMPTR<OSThread_t>(coreinit::OSGetCurrentThread()).GetMPTR(), hCPU->spr.LR, cemuLog_advancedPPCLoggingEnabled() ? " Stack Trace:" : "");
 	cemuLog_log(LogType::Force, "[Debugger] {} was executed! {}", logName, logContext);

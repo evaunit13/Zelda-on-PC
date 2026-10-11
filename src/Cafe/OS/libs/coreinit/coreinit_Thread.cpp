@@ -1,3 +1,4 @@
+#include "pcedition/PCProfiler.h"
 #include "Cafe/OS/common/OSCommon.h"
 #include "Cafe/HW/Espresso/PPCCallback.h"
 #include "Cafe/OS/RPL/rpl.h"
@@ -667,7 +668,64 @@ namespace coreinit
 
 	void OSYieldThread()
 	{
+		// Zelda on PC: a yield only has an effect if another ready thread of the same or higher priority is waiting
+		// for this core. Background threads (BotW: RadarMgr, PlacementMgr) yield after every item they process; going
+		// through a full context switch for each of them cost ~10% of an emulated core. Skip the switch when nobody
+		// else would be scheduled (not on the main core, its scheduler loop also drives alarms and audio).
+		if (pce::Profiler::gYieldFastPath.load(std::memory_order_relaxed) && g_isMulticoreMode && t_assignedCoreIndex != 1)
+		{
+			__OSLockScheduler();
+			const sint32 prio = OSGetCurrentThread()->effectivePriority;
+			const sint32 core = t_assignedCoreIndex;
+			bool contender = false;
+			for (OSThread_t* t = g_coreRunQueue.GetPtr()[core].head.GetPtr(); t; t = t->linkRun[core].next.GetPtr())
+			{
+				if ((sint32)t->effectivePriority <= prio)
+				{
+					contender = true;
+					break;
+				}
+			}
+			__OSUnlockScheduler();
+			if (!contender)
+				return;
+		}
 		PPCCore_switchToScheduler();
+	}
+
+	// Zelda on PC dev bridge: thread list / affinity experiments
+	std::string PCE_DumpThreads()
+	{
+		std::string o;
+		__OSLockScheduler();
+		for (sint32 i = 0; i < activeThreadCount; i++)
+		{
+			OSThread_t* t = (OSThread_t*)memory_getPointerFromVirtualOffset(activeThread[i]);
+			const char* name = t->threadName.GetPtr();
+			o += fmt::format("{:08x} prio {}/{} aff {} state {} susp {} {}|", activeThread[i], (sint32)t->effectivePriority, (sint32)t->basePriority,
+				t->context.getAffinity(), (uint32)t->state.value(), (sint32)t->suspendCounter, name ? name : "");
+		}
+		__OSUnlockScheduler();
+		return o;
+	}
+
+	bool OSSetThreadAffinity(OSThread_t* thread, uint32 affinityMask);
+
+	std::string PCE_SetAffinity(const std::string& namePrefix, uint32 mask)
+	{
+		std::vector<OSThread_t*> hits;
+		__OSLockScheduler();
+		for (sint32 i = 0; i < activeThreadCount; i++)
+		{
+			OSThread_t* t = (OSThread_t*)memory_getPointerFromVirtualOffset(activeThread[i]);
+			const char* name = t->threadName.GetPtr();
+			if (name && std::string_view(name).rfind(namePrefix, 0) == 0)
+				hits.push_back(t);
+		}
+		__OSUnlockScheduler();
+		for (auto* t : hits)
+			OSSetThreadAffinity(t, mask & 7);
+		return fmt::format("{} threads", hits.size());
 	}
 
 	void _OSSleepTicks_alarmHandler(uint64 currentTick, void* context)
@@ -1166,6 +1224,7 @@ namespace coreinit
 		hCPU->reservedMemValue = 0;
 		hCPU->spr.UPIR = coreIndex;
 		hCPU->coreInterruptMask = 1;
+		pce::Profiler::gThread[coreIndex & 3] = memory_getVirtualOffsetFromPointer(thread);
 		PPCInterpreter_setCurrentInstance(hCPU);
 		OSSetCurrentThread(OSGetCoreId(), thread);
 		__OSThreadLoadContext(hCPU, thread);
@@ -1252,6 +1311,7 @@ namespace coreinit
 		__OSUnlockScheduler();
 		while (true)
 		{
+			pce::Profiler::gIdle[t_assignedCoreIndex] = 1;
 			if (!g_coreRunQueueThreadCount[coreIndex].isZero()) // avoid hammering the lock on the main core if there is no runable thread
 			{
 				__OSLockScheduler();
@@ -1260,6 +1320,7 @@ namespace coreinit
 				{
 					cemu_assert_debug(nextThread->state == OSThread_t::THREAD_STATE::STATE_RUNNING);
 					__OSSwitchToThreadFiber(nextThread, coreIndex);
+					pce::Profiler::gIdle[t_assignedCoreIndex] = 1; // back in the idle loop
 				}
 				__OSUnlockScheduler();
 			}
@@ -1331,6 +1392,7 @@ namespace coreinit
 		cemu_assert_debug(g_isMulticoreMode == false || hostThread->selectedCore == t_assignedCoreIndex);
 
 		// received next time slice, load self again
+		pce::Profiler::gIdle[t_assignedCoreIndex] = 0;
 		__OSLoadThread(hostThread->m_thread, &hostThread->ppcInstance, hostThread->selectedCore);
 		__OSThreadStartTimeslice(hostThread->m_thread, &hostThread->ppcInstance);
 	}
@@ -1348,6 +1410,7 @@ namespace coreinit
 		ConfigureHostFloatingPointEnvironment();
 
 		PPCInterpreter_t* hCPU = &hostThread->ppcInstance;
+		pce::Profiler::gIdle[t_assignedCoreIndex] = 0;
 		__OSLoadThread(hostThread->m_thread, hCPU, hostThread->selectedCore);
 		__OSThreadStartTimeslice(hostThread->m_thread, &hostThread->ppcInstance);
 		__OSUnlockScheduler(); // lock is always held when switching to a fiber, so we need to unlock it here

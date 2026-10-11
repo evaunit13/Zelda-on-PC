@@ -625,6 +625,11 @@ namespace coreinit
 
 // deprecated / clean up required
 extern MPTR activeThread[256];
+namespace coreinit
+{
+	std::string PCE_DumpThreads();
+	std::string PCE_SetAffinity(const std::string& namePrefix, uint32 mask);
+}
 extern sint32 activeThreadCount;
 
 extern SlimRWLock srwlock_activeThreadList;

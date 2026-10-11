@@ -25,9 +25,9 @@ LANGUAGE LANG_NEUTRAL, 0x8
 
 // Icon with lowest ID value placed first to ensure application icon
 // remains consistent on all systems.
-M_WND_ICON128           ICON                    "resource\\logo_icon.ico"
+M_WND_ICON128           ICON                    "resource\\zelda_on_pc.ico"
 
-M_WND_ICON16            ICON                    "resource\\logo_icon16.ico"
+M_WND_ICON16            ICON                    "resource\\zelda_on_pc16.ico"
 
 X_INPUT_CONTROLLER      ICON                    "resource\\input\\icons8-game-controller-24.ico"
 
@@ -90,11 +90,11 @@ BEGIN
     BEGIN
         BLOCK "040904b0"
         BEGIN
-            VALUE "FileDescription", "Cemu Wii U emulator"
-            VALUE "InternalName", "Cemu"
-            VALUE "LegalCopyright", "Team Cemu"
-            VALUE "OriginalFilename", "Cemu.exe"
-            VALUE "ProductName", "Cemu"
+            VALUE "FileDescription", "Zelda on PC"
+            VALUE "InternalName", "ZeldaOnPC"
+            VALUE "LegalCopyright", "Built on Cemu (MPL 2.0). Contains no game data."
+            VALUE "OriginalFilename", "ZeldaOnPC.exe"
+            VALUE "ProductName", "Zelda on PC"
         	VALUE "ProductVersion", xstr(EMULATOR_VERSION_MAJOR) "." xstr(EMULATOR_VERSION_MINOR) "." xstr(EMULATOR_VERSION_PATCH) EMULATOR_VERSION_SUFFIX "\0"
         END
     END

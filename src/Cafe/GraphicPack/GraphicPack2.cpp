@@ -913,7 +913,9 @@ void GraphicPack2::_iterateReplacedFiles(const fs::path& currentPath, bool isAOC
 			{
 				virtualMountPath = fs::path(virtualMountBase) / virtualMountPath;
 			}
-			fscDeviceRedirect_add(virtualMountPath.generic_string(), it.file_size(), it.path().generic_string(), m_fs_priority);
+			// paths stay wide / UTF-8: a narrow string conversion throws for folder names outside the ANSI code page
+			// (the PC Edition pack with its content folder always lives below the installation folder)
+			fscDeviceRedirect_add(_pathToUtf8(virtualMountPath), it.file_size(), it.path(), m_fs_priority);
 		}
 	}
 }

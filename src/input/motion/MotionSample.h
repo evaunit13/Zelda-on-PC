@@ -127,6 +127,15 @@ public:
 		m_accMagnitude = sqrtf(m_acc[0] * m_acc[0] + m_acc[1] * m_acc[1] + m_acc[2] * m_acc[2]);
 	}
 
+	// orientation of the device as fused by the IMU (w, x, y, z)
+	void getQuaternion(float q[4]) const
+	{
+		q[0] = m_q[0];
+		q[1] = m_q[1];
+		q[2] = m_q[2];
+		q[3] = m_q[3];
+	}
+
 	void getVPADOrientation(float orientation[3])
 	{
 		orientation[0] = m_orientation[0];

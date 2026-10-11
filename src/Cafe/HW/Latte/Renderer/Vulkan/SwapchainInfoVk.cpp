@@ -6,6 +6,7 @@
 #include "Cafe/HW/Latte/Core/LatteTiming.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
+#include "Cafe/HW/Latte/Renderer/Vulkan/VulkanFFX.h"
 
 SwapchainInfoVk::SwapchainInfoVk(bool mainWindow, Vector2i size) : mainWindow(mainWindow), m_desiredExtent(size)
 {
@@ -38,22 +39,37 @@ void SwapchainInfoVk::Create()
 		image_count = std::min(image_count, details.capabilities.maxImageCount);
 	if(image_count < 2)
 		cemuLog_log(LogType::Force, "Vulkan: Swapchain image count less than 2 may cause problems");
+	const bool useFFX = mainWindow && s_ffxWanted && VulkanRenderer::GetInstance()->FSR_Supported();
+	if (useFFX)
+	{
+		image_count = std::max(image_count, 3u);
+		if (details.capabilities.maxImageCount > 0)
+			image_count = std::min(image_count, details.capabilities.maxImageCount);
+	}
 
 	VkSwapchainCreateInfoKHR create_info = CreateSwapchainCreateInfo(m_surface, details, m_surfaceFormat, image_count, m_actualExtent);
 	create_info.oldSwapchain = nullptr;
-	create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+	create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT; // TRANSFER_SRC: frame generation reads the final image
 
 	VkResult result = vkCreateSwapchainKHR(m_logicalDevice, &create_info, nullptr, &m_swapchain);
 	if (result != VK_SUCCESS)
 		UnrecoverableError("Error attempting to create a swapchain");
 
-	result = vkGetSwapchainImagesKHR(m_logicalDevice, m_swapchain, &image_count, nullptr);
+	// Zelda on PC: hand the swapchain to the FSR 3 frame interpolation swapchain
+	m_ffx = useFFX && VulkanFFX::Get().CreateSwapchain(m_physicalDevice, m_logicalDevice, &m_swapchain, create_info);
+	if (useFFX && !m_ffx && !m_swapchain)
+		UnrecoverableError("Error attempting to create the frame generation swapchain");
+	auto getImages = [this](uint32* count, VkImage* images) {
+		return m_ffx ? VulkanFFX::Get().GetSwapchainImages(m_logicalDevice, m_swapchain, count, images) : vkGetSwapchainImagesKHR(m_logicalDevice, m_swapchain, count, images);
+	};
+
+	result = getImages(&image_count, nullptr);
 	if (result != VK_SUCCESS)
 		UnrecoverableError("Error attempting to retrieve the count of swapchain images");
 
 
 	m_swapchainImages.resize(image_count);
-	result = vkGetSwapchainImagesKHR(m_logicalDevice, m_swapchain, &image_count, m_swapchainImages.data());
+	result = getImages(&image_count, m_swapchainImages.data());
 	if (result != VK_SUCCESS)
 		UnrecoverableError("Error attempting to retrieve swapchain images");
 	// create default renderpass
@@ -157,6 +173,8 @@ void SwapchainInfoVk::Create()
 	hasDefinedSwapchainImage = false;
 
 	m_queueDepth = 0;
+	if (m_ffx)
+		m_maxQueued = 0; // the frame interpolation swapchain paces presentation itself
 }
 
 void SwapchainInfoVk::Cleanup()
@@ -191,6 +209,12 @@ void SwapchainInfoVk::Cleanup()
 		WaitAvailableFence();
 		vkDestroyFence(m_logicalDevice, m_imageAvailableFence, nullptr);
 		m_imageAvailableFence = nullptr;
+	}
+	if (m_ffx)
+	{
+		VulkanFFX::Get().DestroySwapchain(); // destroys the swapchain it owns
+		m_swapchain = VK_NULL_HANDLE;
+		m_ffx = false;
 	}
 	if (m_swapchain)
 	{
@@ -228,7 +252,8 @@ bool SwapchainInfoVk::AcquireImage()
 	ResetAvailableFence();
 
 	VkSemaphore acquireSemaphore = m_acquireSemaphores[m_acquireIndex];
-	VkResult result = vkAcquireNextImageKHR(m_logicalDevice, m_swapchain, 1'000'000'000, acquireSemaphore, m_imageAvailableFence, &swapchainImageIndex);
+	VkResult result = m_ffx ? VulkanFFX::Get().AcquireNextImage(m_logicalDevice, m_swapchain, 1'000'000'000, acquireSemaphore, m_imageAvailableFence, &swapchainImageIndex)
+							: vkAcquireNextImageKHR(m_logicalDevice, m_swapchain, 1'000'000'000, acquireSemaphore, m_imageAvailableFence, &swapchainImageIndex);
 	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
 		m_shouldRecreate = true;
 	if (result == VK_TIMEOUT)
@@ -340,6 +365,15 @@ VkExtent2D SwapchainInfoVk::ChooseSwapExtent(const VkSurfaceCapabilitiesKHR& cap
 VkPresentModeKHR SwapchainInfoVk::ChoosePresentMode(const std::vector<VkPresentModeKHR>& modes)
 {
 	m_maxQueued = 0;
+	static bool logged = false;
+	if (!logged)
+	{
+		std::string s;
+		for (auto m : modes)
+			s += fmt::format("{} ", (int)m);
+		cemuLog_log(LogType::Force, "Vulkan: present modes: {} (0 immediate, 1 mailbox, 2 fifo, 3 fifo relaxed)", s);
+		logged = true;
+	}
 	const auto vsyncState = (VSync)GetConfig().vsync.GetValue();
 	if (vsyncState == VSync::MAILBOX)
 	{

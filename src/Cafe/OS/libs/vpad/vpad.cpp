@@ -1,6 +1,9 @@
 #include "Cafe/OS/common/OSCommon.h"
 #include "Cafe/HW/Espresso/PPCCallback.h"
 #include "Cafe/OS/libs/vpad/vpad.h"
+#include "pcedition/PCEdition.h"
+#include "pcedition/PCInput.h"
+#include "pcedition/PCOverlay.h"
 #include "audio/IAudioAPI.h"
 #include "Cafe/OS/libs/coreinit/coreinit_Time.h"
 #include "config/ActiveSettings.h"
@@ -238,6 +241,25 @@ namespace vpad
 		status->tpProcessed1.validity = VPAD_TP_VALIDITY_INVALID_XY;
 		status->tpProcessed2.validity = VPAD_TP_VALIDITY_INVALID_XY;
 
+		if (pce::IsActive())
+		{
+			// Zelda on PC: native keyboard & mouse drive the GamePad directly
+			if (channel != 0)
+			{
+				if (error)
+					*error = VPAD_READ_ERR_NO_CONTROLLER;
+				if (length > 0)
+					status->vpadErr = -1;
+				return 0;
+			}
+			pce::Overlay::BlockWhileOpen(); // the settings menu pauses the game loop
+			if (PPCInterpreter_t* cpu = PPCInterpreter_getCurrentInstance())
+				pce::Input::NoteVPADCaller(cpu->spr.LR, length);
+			pce::Input::FillVPAD(*status);
+			if (error)
+				*error = VPAD_READ_ERR_NONE;
+			return 1;
+		}
 		const auto controller = InputManager::instance().get_vpad_controller(channel);
 		if (!controller)
 		{
@@ -302,6 +324,8 @@ namespace vpad
 	void VPADSetBtnRepeat(sint32 channel, float delay, float pulse)
 	{
 		cemuLog_log(LogType::InputAPI, "VPADSetBtnRepeat({}, {}, {})", channel, delay, pulse);
+		if (channel == 0)
+			pce::Input::SetButtonRepeat(pulse == 0 ? 40000 : (sint32)((delay * 200.0f) + 0.5f), pulse == 0 ? 0 : (sint32)((pulse * 200.0f) + 0.5f));
 		if(pulse == 0)
 		{
 			g_vpad.controller_data[channel].btn_repeat.delay = 40000;

@@ -57,6 +57,8 @@ struct SwapchainInfoVk
 	~SwapchainInfoVk();
 
 	bool mainWindow{};
+	bool m_ffx = false; // Zelda on PC: FSR 3 frame interpolation swapchain (VulkanFFX)
+	static inline bool s_ffxWanted = false; // main window should use it (set from the settings)
 
 	bool m_shouldRecreate = false;
 	VSync m_vsyncState = VSync::Immediate;

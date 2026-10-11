@@ -35,6 +35,9 @@
 #include "Cafe/TitleList/TitleList.h"
 #include "Cafe/TitleList/SaveList.h"
 #include "Cafe/CafeSystem.h"
+#include "pcedition/PCEdition.h"
+#include "pcedition/PCGraphics.h"
+#include "pcedition/PCSettings.h"
 
 wxIMPLEMENT_APP_NO_MAIN(CemuApp);
 
@@ -89,6 +92,11 @@ fs::path GetAppDataRoamingPath()
 #if BOOST_OS_WINDOWS
 void CemuApp::DeterminePaths(std::set<fs::path>& failedWriteAccess) // for Windows
 {
+	if (pce::IsActive())
+	{
+		pce::DeterminePaths(wxHelper::MakeFSPath(wxStandardPaths::Get().GetExecutablePath()), failedWriteAccess);
+		return;
+	}
 	std::error_code ec;
 	bool isPortable = false;
 	fs::path user_data_path, config_path, cache_path, data_path;
@@ -309,11 +317,21 @@ bool CemuApp::OnInit()
 
 	for (auto&& path : failedWriteAccess)
 	{
+		if (pce::IsActive())
+		{
+			cemuLog_log(LogType::Force, "Cannot write to {}", _pathToUtf8(path));
+			continue;
+		}
 		wxMessageBox(formatWxString(_("Cemu can't write to {}!"), wxHelper::FromPath(path)),
 					 _("Warning"), wxOK | wxCENTRE | wxICON_EXCLAMATION, nullptr);
 	}
 
-	if (isFirstStart)
+	if (isFirstStart && pce::IsActive())
+	{
+		GetConfigHandle().Save();
+		InitializeNewMLCOrFail(ActiveSettings::GetMlcPath());
+	}
+	else if (isFirstStart)
 	{
 		// show the getting started dialog
 		GettingStartedDialog dia(nullptr);
@@ -341,7 +359,37 @@ bool CemuApp::OnInit()
 #if BOOST_OS_MACOS
 	SDLControllerProvider::InitSDL();
 #endif
+	if (pce::IsActive())
+		pce::InitBeforeCemu();
 	CemuCommonInit();
+	if (pce::IsActive())
+	{
+		pce::ReapplyForcedConfig();
+		auto& wxc = GetWxGUIConfig();
+		wxc.check_update = false;
+		wxc.use_discord_presence = false;
+		wxc.fullscreen_menubar = false;
+		wxc.did_show_vulkan_warning = true;
+		wxc.fullscreen = pce::GetSettings().fullscreen && !pce::ForceWindowed();
+		pce::Graphics::ApplySettingsToPacks();
+		if (!pce::IsGameAvailable())
+		{
+			pce::FatalError("Your copy of The Legend of Zelda: Breath of the Wild could not be found.\n\n"
+							"Run the installer again and select the folder that holds your game dump (base game, update 1.5.0 and DLC as "
+							"folders with code / content / meta), or set it in settings.ini next to the executable:\n\n[Game]\nPath=...");
+			exit(0);
+		}
+		if (pce::GetUpdateVersion() != pce::kRequiredUpdateVersion)
+		{
+			pce::FatalError(pce::GetUpdateTitlePath().empty()
+								? "The game update was not found.\n\nVersion 1.5.0 of the game is required. Put your dumped update folder next to "
+								  "the base game folder (or install it in Cemu) and start again."
+								: fmt::format("Game update version {} was found, but version 1.5.0 (v{}) is required.\n\nDump the latest update "
+											  "from your console and start again.",
+											  pce::GetUpdateVersion(), pce::kRequiredUpdateVersion));
+			exit(0);
+		}
+	}
 
 #if BOOST_OS_MACOS
 	m_sdlEventPumpTimer = new wxTimer(this);
@@ -375,7 +423,10 @@ bool CemuApp::OnInit()
 	std::unique_lock lock(g_mutex);
 	g_window_info.app_active = true;
 
-	HotkeySettings::Init(m_mainFrame);
+	if (pce::IsActive())
+		pce::InitAfterWindow(m_mainFrame->GetHWND());
+	else
+		HotkeySettings::Init(m_mainFrame);
 
 	SetTopWindow(m_mainFrame);
 	m_mainFrame->Show();
@@ -400,6 +451,7 @@ int CemuApp::OnExit()
 	}
 #endif
 	wxApp::OnExit();
+	pce::Shutdown();
 	wxTheClipboard->Flush();
 	InputManager::instance().Shutdown();
 	int retValue = 0;

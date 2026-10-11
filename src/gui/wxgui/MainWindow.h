@@ -140,6 +140,10 @@ public:
 	void DestroyCanvas();
 
 	static void ShowCursor(bool state);
+	void UpdatePCECursor();
+	bool m_pce_cursor_captured = false;
+	bool m_pce_was_foreground = false;      // the game window was the last real foreground window
+	unsigned long long m_pce_no_foreground_since = 0;
 
 	uintptr_t GetRenderCanvasHWND();
 

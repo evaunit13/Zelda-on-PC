@@ -1,4 +1,6 @@
 #include "Cafe/CafeSystem.h"
+#include "pcedition/PCEdition.h"
+#include "pcedition/PCOverlay.h"
 #include "Cafe/HW/Latte/Core/LatteConst.h"
 #include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/HW/Latte/Core/LatteShader.h"
@@ -566,6 +568,18 @@ void LatteShaderCache_ShowProgress(const std::function <bool(void)>& loadUpdateF
 
 			// render background texture
 			LatteShaderCache_drawBackgroundImage(g_shaderCacheLoaderState.textureTVId, 1280, 720);
+			if (pce::IsActive())
+			{
+				// PC Edition: only the boot image and a discreet loading indicator
+				float percent = isPipelines ? (float)g_shaderCacheLoaderState.loadedPipelines / (float)std::max(1u, (uint32)g_shaderCacheLoaderState.pipelineFileCount)
+											: (float)g_shaderCacheLoaderState.loadedShaderFiles / (float)std::max(1u, (uint32)g_shaderCacheLoaderState.shaderFileCount);
+				pce::Overlay::DrawLoadingIndicator((isPipelines ? 0.5f : 0.0f) + 0.5f * percent);
+				g_renderer->ImguiEnd();
+				lastFrameUpdate = tick_cached();
+				g_renderer->BeginFrame(false);
+				g_renderer->SwapBuffers(true, false);
+				continue;
+			}
 
 			const auto progress_font = ImGui_GetFont(window_size.y / 32.0f); // = 24 by default
 			const auto shader_count_font = ImGui_GetFont(window_size.y / 48.0f); // = 16

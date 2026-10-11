@@ -63,6 +63,7 @@ add_subdirectory(audio)
 add_subdirectory(util)
 add_subdirectory(imgui)
 add_subdirectory(resource)
+add_subdirectory(pcedition)
 
 add_executable(CemuBin
 	main.cpp
@@ -75,6 +76,11 @@ if(MSVC AND MSVC_VERSION EQUAL 1940)
 	# workaround for an msvc issue on VS 17.10 where generated ILK files are too large
 	# see https://developercommunity.visualstudio.com/t/After-updating-to-VS-1710-the-size-of-/10665511
 	set_target_properties(CemuBin PROPERTIES LINK_FLAGS "/INCREMENTAL:NO")
+endif()
+
+if(MSVC)
+	# PC Edition: linker map, resolves native addresses in profiler reports (tools/dev/prof_resolve.py)
+	target_link_options(CemuBin PRIVATE /MAP)
 endif()
 
 if(WIN32)
@@ -94,7 +100,7 @@ string(TIMESTAMP CURRENT_YEAR "%Y" UTC)
 
 set_property(TARGET CemuBin PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 set_property(TARGET CemuBin PROPERTY WIN32_EXECUTABLE $<NOT:$<CONFIG:Debug>>)
-set(OUTPUT_NAME "Cemu_$<LOWER_CASE:$<CONFIG>>")
+set(OUTPUT_NAME "ZeldaOnPC_$<LOWER_CASE:$<CONFIG>>")
 
 if (MACOS_BUNDLE)
 	set_property(TARGET CemuBin PROPERTY MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/resource/MacOSXBundleInfo.plist.in")
@@ -207,6 +213,7 @@ if(ENABLE_SDL)
 endif()
 
 target_link_libraries(CemuBin PRIVATE
+	CemuPCEdition
 	CemuAudio
 	CemuCafe
 	CemuCommon

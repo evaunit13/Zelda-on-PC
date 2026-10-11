@@ -1746,8 +1746,15 @@ void VulkanRenderer::draw_execute_continued(uint32 baseVertex, uint32 baseInstan
 	LatteStreamout_FinishDrawcall(m_useHostMemoryForCache);
 }
 
+void LatteFrameTrace_OnDraw(); // Zelda on PC dev tool (LatteRenderTarget.cpp)
+void LatteFSR_OnDraw(bool isFirstOfPass); // Zelda on PC FSR 3 inputs (LatteRenderTarget.cpp)
+extern bool g_latteFsrActive;
+
 void VulkanRenderer::draw_execute(uint32 baseVertex, uint32 baseInstance, uint32 instanceCount, uint32 count, MPTR indexDataMPTR, Latte::LATTE_VGT_DMA_INDEX_TYPE::E_INDEX_TYPE indexType, const LatteDrawcallContext& drawcallContext)
 {
+	LatteFrameTrace_OnDraw();
+	if (g_latteFsrActive)
+		LatteFSR_OnDraw(drawcallContext.isFirst);
 	if (drawcallContext.isFirst)
 		draw_execute_first(baseVertex, baseInstance, instanceCount, count, indexDataMPTR, indexType, drawcallContext);
 	else
