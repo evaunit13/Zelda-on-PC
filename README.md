@@ -135,8 +135,8 @@ development with C++* workload (it brings CMake and Ninja), and Git. For the ins
 [Inno Setup 6.3+](https://jrsoftware.org/isinfo.php).
 
 ```bat
-git clone --recursive <this repository>
-cd ZeldaOnPC
+git clone --recursive https://github.com/mircea32000/Zelda-on-PC.git
+cd Zelda-on-PC
 tools\build.cmd
 powershell -ExecutionPolicy Bypass -File tools\package.ps1
 ```
