@@ -54,3 +54,17 @@ bin/graphicPacks/*
 
 # Ignore Finder view option files created by OS X
 .DS_Store
+bin/*.map
+
+# Zelda on PC: community graphic packs fetched at build time (tools/get_graphic_packs.ps1)
+bin/resources/pcedition/graphicPacks/
+# Zelda on PC: data written at run time (settings, saves, caches), build and installer output
+bin/data/
+bin/data_dev/
+bin/settings.ini
+bin/*.exe
+bin/*.dll
+bin/*.pdb
+installer/output/
+__pycache__/
+tools/dev/.rpxcache/
