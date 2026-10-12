@@ -39,6 +39,9 @@ own frame generation (FidelityFX SDK, FSR 3.1) integrated into Cemu's Vulkan ren
 it the game's **depth buffer**, **motion vectors** reconstructed from the game camera, and the image **without the
 HUD**, so the interface is drawn on top at full sharpness instead of being interpolated.
 
+- The motion vectors cover the movement of the camera only. Things that move on their own (Link, enemies, grass in
+  the wind) have no motion vectors: they are left to FSR's optical flow and can show ghosting that a game with
+  per-object motion vectors would not have.
 - The frame rate limit counts the frames you see (limit 120 = 60 real + 60 generated).
 - Not tied to a GPU vendor: it runs on the Vulkan renderer.
 - Game logic and physics never run on generated frames.
