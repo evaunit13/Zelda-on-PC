@@ -11,6 +11,7 @@
 #include "config/ActiveSettings.h"
 #include "config/CemuConfig.h"
 #include "Cafe/GraphicPack/GraphicPack2.h"
+#include "Cafe/HW/Latte/Core/Latte.h"
 #include "Cafe/CafeSystem.h"
 
 namespace pce::Graphics
@@ -389,12 +390,17 @@ blr
 			if (auto gfx = FindPack("BreathOfTheWild/Graphics"))
 			{
 				gfx->SetEnabled(true);
-				const auto& res = GetResolutionOptions();
+				const int aspect = EffectiveAspect(s.aspectRatio);
+				const auto& res = GetResolutionOptions(aspect);
 				const int ri = std::clamp(s.resolutionPreset, 0, (int)res.size() - 1);
 				if (!live)
 				{
-					SelectPreset(gfx, "Aspect Ratio", "16:9");
+					static const char* kAspect[] = {"16:9", "16:9", "16:10", "21:9", "32:9"};
+					SelectPreset(gfx, "Aspect Ratio", kAspect[aspect]);
 					SelectPreset(gfx, "Resolution", fmt::format("{}x{}", res[ri].width, res[ri].height));
+					if (aspect >= 3)
+						SelectPreset(gfx, "Ultrawide HUD Mode", s.ultrawideHud == 1 ? "Centered HUD" : "Edge HUD");
+					cemuLog_log(LogType::Force, "PCE: aspect ratio {} (setting {}), resolution {}x{}", kAspect[aspect], s.aspectRatio, res[ri].width, res[ri].height);
 					static const char* kShadow[] = {"Low", "Medium", "High", "Ultra"};
 					SelectPreset(gfx, "Shadows", kShadow[std::clamp(s.shadowPreset, 0, 3)]);
 					static const char* kShadowDist[] = {"Medium", "High", "Very High", "Ultra"};
@@ -428,16 +434,52 @@ blr
 		}
 	}
 
-	const std::vector<ResolutionOption>& GetResolutionOptions()
+	int EffectiveAspect(int setting)
 	{
-		static const std::vector<ResolutionOption> r = {
-			{1280, 720, "1280 x 720"},
-			{1920, 1080, "1920 x 1080"},
-			{2560, 1440, "2560 x 1440"},
-			{3200, 1800, "3200 x 1800"},
-			{3840, 2160, "3840 x 2160"},
-		};
+		if (setting >= 1 && setting <= 4)
+			return setting;
+		// automatic: the shape of the main display
+		const int w = GetSystemMetrics(SM_CXSCREEN), h = GetSystemMetrics(SM_CYSCREEN);
+		const double ratio = h > 0 ? (double)w / (double)h : 16.0 / 9.0;
+		return ratio > 3.2 ? 4 : (ratio > 2.2 ? 3 : 1); // 32:9 = 3.56, 21:9 = 2.33 - 2.39, 16:9 = 1.78
+	}
+
+	const std::vector<std::string>& GetAspectOptions()
+	{
+		static const std::vector<std::string> r = {"Automatic", "16:9", "16:10", "21:9 (ultrawide)", "32:9 (super ultrawide)"};
 		return r;
+	}
+
+	const std::vector<ResolutionOption>& GetResolutionOptions(int aspect)
+	{
+		// (resolutions the community graphics pack has for each aspect ratio)
+		static const std::vector<ResolutionOption> r16_9 = {
+			{1280, 720, "1280 x 720"}, {1920, 1080, "1920 x 1080"}, {2560, 1440, "2560 x 1440"}, {3200, 1800, "3200 x 1800"}, {3840, 2160, "3840 x 2160"},
+		};
+		static const std::vector<ResolutionOption> r16_10 = {
+			{1280, 800, "1280 x 800"}, {1920, 1200, "1920 x 1200"}, {2560, 1600, "2560 x 1600"}, {2880, 1800, "2880 x 1800"}, {3840, 2400, "3840 x 2400"},
+		};
+		static const std::vector<ResolutionOption> r21_9 = {
+			{1720, 720, "1720 x 720"}, {2560, 1080, "2560 x 1080"}, {3440, 1440, "3440 x 1440"}, {4300, 1800, "4300 x 1800"}, {5120, 2160, "5120 x 2160"},
+		};
+		static const std::vector<ResolutionOption> r32_9 = {
+			{3840, 1080, "3840 x 1080 (smallest)"}, {3840, 1080, "3840 x 1080"}, {5120, 1440, "5120 x 1440"}, {5120, 1440, "5120 x 1440 (largest below 2160)"}, {7680, 2160, "7680 x 2160"},
+		};
+		switch (aspect)
+		{
+		case 2: return r16_10;
+		case 3: return r21_9;
+		case 4: return r32_9;
+		default: return r16_9;
+		}
+	}
+
+	bool GetPictureArea(int& x, int& y, int& width, int& height, int& windowWidth, int& windowHeight)
+	{
+		sint32 ix = 0, iy = 0, iw = 0, ih = 0, fw = 0, fh = 0;
+		LatteRenderTarget_getScreenImageArea(&ix, &iy, &iw, &ih, &fw, &fh, false);
+		x = ix; y = iy; width = iw; height = ih; windowWidth = fw; windowHeight = fh;
+		return iw > 0 && ih > 0 && fw > 0 && fh > 0;
 	}
 
 	const std::vector<std::string>& GetShadowOptions()
@@ -529,7 +571,8 @@ blr
 					gp->Reload();
 			}
 		}
-		sRestartPending = s.resolutionPreset != sAppliedAtBoot.resolutionPreset || s.shadowPreset != sAppliedAtBoot.shadowPreset;
+		sRestartPending = s.resolutionPreset != sAppliedAtBoot.resolutionPreset || s.shadowPreset != sAppliedAtBoot.shadowPreset ||
+						  s.aspectRatio != sAppliedAtBoot.aspectRatio || s.ultrawideHud != sAppliedAtBoot.ultrawideHud;
 		return sRestartPending;
 	}
 

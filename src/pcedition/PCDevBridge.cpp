@@ -428,6 +428,8 @@ namespace pce::DevBridge
 					sSnaps.clear();
 					return "ok";
 				}
+				if (c == "picmap")
+					return Input::DebugPictureMap(f(1), f(2), f(3), f(4)); // picmap <x> <y> <client width> <client height>
 				if (c == "camage")
 					return Input::CameraAges();
 				if (c == "vpadcallers")

@@ -12,7 +12,15 @@ namespace pce::Graphics
 		int width, height;
 		std::string label;
 	};
-	const std::vector<ResolutionOption>& GetResolutionOptions();
+	// Aspect ratio the game renders in: 1 16:9, 2 16:10, 3 21:9, 4 32:9. For Settings::aspectRatio = 0 it follows the
+	// main display, for the ultrawide formats only (a 16:10 display keeps 16:9 unless 16:10 is chosen).
+	int EffectiveAspect(int setting);
+	const std::vector<std::string>& GetAspectOptions();
+	// the resolutions of an aspect ratio (same number of entries and the same heights for all of them)
+	const std::vector<ResolutionOption>& GetResolutionOptions(int aspect = 1);
+	// The picture inside the game window (it has bars when the window has another shape), in pixels of the window's
+	// client area. false while there is no picture yet.
+	bool GetPictureArea(int& x, int& y, int& width, int& height, int& windowWidth, int& windowHeight);
 	const std::vector<std::string>& GetShadowOptions();
 	const std::vector<std::string>& GetAAOptions();
 	const std::vector<int>& GetFpsOptions();

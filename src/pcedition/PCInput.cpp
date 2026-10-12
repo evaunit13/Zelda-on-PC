@@ -5,6 +5,7 @@
 #include "pcedition/PCUI.h"
 #include "pcedition/PCMenus.h"
 #include "pcedition/PCOverlay.h"
+#include "pcedition/PCGraphics.h"
 
 #include <windows.h>
 #include <deque>
@@ -286,6 +287,27 @@ namespace pce::Input
 			sMsgWnd = nullptr;
 		}
 
+		// Position in the client area of the game window -> position in the game's picture (0 - 1). The picture keeps
+		// its shape: in a window of another shape (16:10 display, 16:9 picture on an ultrawide display, ...) it has bars,
+		// and menu entries are where the picture shows them, not at the same fraction of the window.
+		void MapToPicture(float x, float y, float clientW, float clientH, float& outX, float& outY, bool& inside)
+		{
+			float px = 0.0f, py = 0.0f, pw = clientW, ph = clientH;
+			int ix, iy, iw, ih, ww, wh;
+			if (Graphics::GetPictureArea(ix, iy, iw, ih, ww, wh))
+			{
+				// (the renderer counts in physical pixels; the same thing as the client area for this DPI aware process)
+				const float kx = clientW / (float)ww, ky = clientH / (float)wh;
+				px = ix * kx;
+				py = iy * ky;
+				pw = iw * kx;
+				ph = ih * ky;
+			}
+			outX = (x - px) / pw;
+			outY = (y - py) / ph;
+			inside = outX >= 0.0f && outX <= 1.0f && outY >= 0.0f && outY <= 1.0f;
+		}
+
 		// ---------------- per-frame game input state (emulated CPU thread) ----------------
 		struct FrameState
 		{
@@ -313,8 +335,11 @@ namespace pce::Input
 				sint32 flickDir = 0;
 				double mouseAccum = 0.0;
 				sint64 lastActivityQpc = 0;
-				bool releasing = false;
+				sint32 keyDir = 0;        // movement keys stepping through it (Settings::selectorMoveKeys)
+				sint32 keyFrames = 0;
+				sint32 closeFrame = -1;   // bow selector: the shot is being cancelled before the aim button is let go
 			} sel;
+			sint64 selClosedQpc = 0;      // when a selector closed by itself (the game's menu takes a moment longer)
 			// tilt
 			float tiltPitch = 0.0f, tiltRoll = 0.0f; // degrees
 			// direct camera: keeps a tiny stick deflection while the mouse is moving
@@ -982,6 +1007,16 @@ namespace pce::Input
 		std::map<std::pair<uint32, uint32>, uint32> sCallers;
 	}
 
+	std::string DebugPictureMap(float x, float y, float clientW, float clientH)
+	{
+		float ox, oy;
+		bool inside;
+		MapToPicture(x, y, clientW, clientH, ox, oy, inside);
+		int px, py, pw, ph, ww, wh;
+		const bool ok = Graphics::GetPictureArea(px, py, pw, ph, ww, wh);
+		return fmt::format("{:.4f} {:.4f} inside={} picture={}({},{} {}x{} in {}x{})", ox, oy, inside, ok, px, py, pw, ph, ww, wh);
+	}
+
 	std::string CameraAges()
 	{
 		const uint32 f = sDebug.frameCounter.load();
@@ -1097,11 +1132,7 @@ namespace pce::Input
 			POINT pt;
 			RECT rc;
 			if (GetCursorPos(&pt) && ScreenToClient(main, &pt) && GetClientRect(main, &rc) && rc.right > 0 && rc.bottom > 0)
-			{
-				mio.mouseX = (float)pt.x / (float)rc.right;
-				mio.mouseY = (float)pt.y / (float)rc.bottom;
-				mio.mouseInside = mio.mouseX >= 0.0f && mio.mouseX <= 1.0f && mio.mouseY >= 0.0f && mio.mouseY <= 1.0f;
-			}
+				MapToPicture((float)pt.x, (float)pt.y, (float)rc.right, (float)rc.bottom, mio.mouseX, mio.mouseY, mio.mouseInside);
 		}
 		if (sDebug.overrideMouse.load())
 		{
@@ -1513,10 +1544,16 @@ namespace pce::Input
 		}
 		if (ui.inventory)
 		{
-			// inventory: A / D switch pages
-			if (down(Action::MoveLeft)) hold |= VPAD_L;
-			if (down(Action::MoveRight)) hold |= VPAD_R;
-			lx = 0.0f;
+			// inventory: A / D switch pages, or move the cursor like W / S do (Settings::inventoryMoveKeys);
+			// the pages also have keys of their own
+			if (!s.inventoryMoveKeys)
+			{
+				if (down(Action::MoveLeft)) hold |= VPAD_L;
+				if (down(Action::MoveRight)) hold |= VPAD_R;
+				lx = 0.0f;
+			}
+			if (down(Action::MenuPrevPage)) hold |= VPAD_L;
+			if (down(Action::MenuNextPage)) hold |= VPAD_R;
 		}
 		if (mio.overrideLStick)
 		{
@@ -1542,9 +1579,10 @@ namespace pce::Input
 			case Action::WeaponSelect: sel.holdButtons = VPAD_RIGHT; break;
 			case Action::ShieldSelect: sel.holdButtons = VPAD_LEFT; break;
 			case Action::RuneSelect: sel.holdButtons = VPAD_UP; break;
-			case Action::BowSelect: sel.preButtons = VPAD_ZR; sel.holdButtons = VPAD_LEFT; break;
-			case Action::WeaponNext: // arrows while aiming (ZR held), weapons otherwise
-				sel.holdButtons = VPAD_RIGHT;
+			// (while the aim button is held the game has the bows on d-pad right and the arrows on d-pad left)
+			case Action::BowSelect: sel.preButtons = VPAD_ZR; sel.holdButtons = VPAD_RIGHT; break;
+			case Action::WeaponNext: // arrows while the player aims, weapons otherwise
+				sel.holdButtons = down(Action::Bow) ? VPAD_LEFT : VPAD_RIGHT;
 				break;
 			default: break;
 			}
@@ -1559,7 +1597,12 @@ namespace pce::Input
 		}
 		const sint32 wheelNext = ActionWheel(s, Action::WeaponNext, wheel) + (pressed(Action::WeaponNext) ? 1 : 0);
 		const sint32 wheelPrev = ActionWheel(s, Action::WeaponPrev, wheel) + (pressed(Action::WeaponPrev) ? 1 : 0);
-		if ((wheelNext || wheelPrev) && selectorsAllowed)
+		// A selector of ours that is open counts as a menu for the game, also for a moment after it has closed: the steps
+		// that follow the one which opened it are taken all the same.
+		const bool ownSelector = sel.active ? sel.closeFrame < 0 : (fs.selClosedQpc != 0 && (double)(now - fs.selClosedQpc) / QpcFreq() < 0.25);
+		const bool selectorSteps = selectorsAllowed || (ownSelector && inputEnabled && !tilt && !pushPullContext && !mio.pointerMode &&
+														!ui.scope && !ui.inventory && !ui.map);
+		if ((wheelNext || wheelPrev) && selectorSteps)
 		{
 			if (!sel.active)
 				openSelector(Action::WeaponNext, false);
@@ -1568,7 +1611,19 @@ namespace pce::Input
 		}
 		float selStickX = 0.0f;
 		bool selectorOwnsStick = false;
-		if (sel.active)
+		if (sel.active && sel.closeFrame >= 0)
+		{
+			// The bow selector holds the aim button for the game, and Link has nocked an arrow meanwhile (at once when
+			// the bow was already in his hands): letting go of the button would shoot it. The d-pad is released first
+			// (the selection is equipped), then the shot is cancelled with the game's cancel button.
+			selectorOwnsStick = true;
+			hold |= sel.preButtons;
+			if (sel.closeFrame >= 2)
+				hold |= VPAD_B;
+			if (++sel.closeFrame > 8)
+				sel.active = false;
+		}
+		else if (sel.active)
 		{
 			selectorOwnsStick = true;
 			constexpr sint32 kPreFrames = 6;   // let ZR register (bow drawn) before pressing the d-pad
@@ -1578,6 +1633,27 @@ namespace pce::Input
 			hold |= sel.preButtons;
 			if (sel.frame >= pre)
 				hold |= sel.holdButtons;
+			if (s.selectorMoveKeys)
+			{
+				// the movement keys step through the selector (one step per press, repeating when held) and do not
+				// move Link meanwhile
+				const sint32 dir = (down(Action::MoveRight) ? 1 : 0) - (down(Action::MoveLeft) ? 1 : 0);
+				bool step = false;
+				if (dir != sel.keyDir)
+				{
+					sel.keyDir = dir;
+					sel.keyFrames = 0;
+					step = dir != 0;
+				}
+				else if (dir != 0 && ++sel.keyFrames >= 18 && (sel.keyFrames - 18) % 6 == 0)
+					step = true;
+				if (step)
+				{
+					sel.pendingSteps += dir;
+					sel.lastActivityQpc = now;
+				}
+				lx = ly = 0.0f;
+			}
 			if (sel.keyDriven)
 			{
 				// mouse X scrolls the selection while the key is held
@@ -1613,7 +1689,14 @@ namespace pce::Input
 				wantClose = ((double)(now - sel.lastActivityQpc) / QpcFreq()) * 1000.0 > s.wheelReleaseDelayMs || !inputEnabled;
 			if (wantClose && sel.flickDir == 0 && sel.pendingSteps == 0)
 			{
-				sel.active = false; // releasing the d-pad equips the highlighted item
+				// releasing the d-pad equips the highlighted item
+				if (sel.preButtons && !down(Action::Bow) && inputEnabled)
+					sel.closeFrame = 0; // (not when the player aims himself: his own button keeps the bow drawn)
+				else
+				{
+					sel.active = false;
+					fs.selClosedQpc = now;
+				}
 			}
 		}
 

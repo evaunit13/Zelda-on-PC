@@ -49,6 +49,8 @@ namespace pce
 			{"CameraRight", "Camera Right", "Camera", {Key::None, Key::None}},
 			{"TiltMode", "Motion Control (Tilt)", "Camera", {K('T'), Key::None}},
 			{"Settings", "PC Settings", "Menus", {Key::Escape, Key::F1}},
+			{"MenuPrevPage", "Inventory: Previous Page", "Menus", {Key::PageUp, Key::None}},
+			{"MenuNextPage", "Inventory: Next Page", "Menus", {Key::PageDown, Key::None}},
 		};
 
 		std::mutex sMutex;
@@ -192,6 +194,8 @@ namespace pce
 			Get(m, "Movement", "ToggleShield", s.toggleShield);
 			Get(m, "Equipment", "WheelReleaseDelayMs", s.wheelReleaseDelayMs);
 			Get(m, "Equipment", "SelectorMouseStep", s.selectorMouseStep);
+			Get(m, "Equipment", "SelectorMoveKeys", s.selectorMoveKeys);
+			Get(m, "Equipment", "InventoryMoveKeys", s.inventoryMoveKeys);
 			Get(m, "Tilt", "Sensitivity", s.tiltSensitivity);
 			Get(m, "Tilt", "InvertX", s.tiltInvertX);
 			Get(m, "Tilt", "InvertY", s.tiltInvertY);
@@ -199,6 +203,8 @@ namespace pce
 			Get(m, "Tilt", "MaxAngle", s.tiltMaxAngle);
 			Get(m, "Tilt", "ReturnSpeed", s.tiltReturnSpeed);
 			Get(m, "Graphics", "Resolution", s.resolutionPreset);
+			Get(m, "Graphics", "AspectRatio", s.aspectRatio);
+			Get(m, "Graphics", "UltrawideHUD", s.ultrawideHud);
 			Get(m, "Graphics", "FPSLimit", s.fpsLimit);
 			Get(m, "Graphics", "VSync", s.vsync);
 			Get(m, "Graphics", "Shadows", s.shadowPreset);
@@ -261,7 +267,9 @@ namespace pce
 		o << "ToggleShield=" << b(s.toggleShield) << "\n\n";
 		o << "[Equipment]\n";
 		o << "WheelReleaseDelayMs=" << s.wheelReleaseDelayMs << "\n";
-		o << "SelectorMouseStep=" << s.selectorMouseStep << "\n\n";
+		o << "SelectorMouseStep=" << s.selectorMouseStep << "\n";
+		o << "SelectorMoveKeys=" << b(s.selectorMoveKeys) << "\n";
+		o << "InventoryMoveKeys=" << b(s.inventoryMoveKeys) << "\n\n";
 		o << "[Tilt]\n";
 		o << "Sensitivity=" << s.tiltSensitivity << "\n";
 		o << "InvertX=" << b(s.tiltInvertX) << "\n";
@@ -271,6 +279,8 @@ namespace pce
 		o << "ReturnSpeed=" << s.tiltReturnSpeed << "\n\n";
 		o << "[Graphics]\n";
 		o << "Resolution=" << s.resolutionPreset << "\n";
+		o << "AspectRatio=" << s.aspectRatio << "\n";
+		o << "UltrawideHUD=" << s.ultrawideHud << "\n";
 		o << "FPSLimit=" << s.fpsLimit << "\n";
 		o << "VSync=" << b(s.vsync) << "\n";
 		o << "Shadows=" << s.shadowPreset << "\n";

@@ -33,7 +33,7 @@ namespace pce
 		Scope,        // R-stick click
 		Whistle,      // D-pad down
 		WeaponSelect, // hold D-pad right
-		BowSelect,    // hold ZR + D-pad left
+		BowSelect,    // hold ZR + D-pad right
 		ShieldSelect, // hold D-pad left
 		RuneSelect,   // hold D-pad up
 		WeaponNext,   // wheel: next weapon (or arrow while aiming)
@@ -53,6 +53,8 @@ namespace pce
 		CameraRight,
 		TiltMode,
 		Settings,
+		MenuPrevPage, // L (inventory: Adventure Log / Inventory / System)
+		MenuNextPage, // R
 		Count
 	};
 	constexpr size_t kActionCount = (size_t)Action::Count;
@@ -99,6 +101,8 @@ namespace pce
 		// weapon wheel
 		float wheelReleaseDelayMs = 450.0f; // after the last wheel notch, release the selector (equips item)
 		float selectorMouseStep = 60.0f;    // mouse counts per selection step while a selector key is held
+		bool selectorMoveKeys = false;      // Move Left / Right step through an open selector (and do not move Link then)
+		bool inventoryMoveKeys = false;     // Move Left / Right move the inventory cursor instead of switching its pages
 
 		// tilt (gyro emulation)
 		float tiltSensitivity = 1.0f;       // multiplier; base = 0.05 deg per count
@@ -110,6 +114,8 @@ namespace pce
 
 		// graphics (applied through graphic packs / renderer)
 		int resolutionPreset = 1;           // index into resolution list
+		int aspectRatio = 0;                // 0 automatic (21:9 / 32:9 on such a display, else 16:9), 1 16:9, 2 16:10, 3 21:9, 4 32:9
+		int ultrawideHud = 0;               // 21:9 / 32:9: 0 HUD at the screen edges, 1 HUD centred (16:9 area)
 		int fpsLimit = 60;                  // 30, 60, 90, 120, 144, 165 or 240 (FPS++ limit)
 		bool vsync = true;
 		int shadowPreset = 1;

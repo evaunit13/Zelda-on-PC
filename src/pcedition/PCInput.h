@@ -86,6 +86,8 @@ namespace pce
 		void NoteVPADCaller(uint32 lr, uint32 length);
 		// diagnostics: frames since the chase / aim camera hooks last ran
 		std::string CameraAges();
+		// dev: a client area position mapped to the game's picture, and the picture's place in the window
+		std::string DebugPictureMap(float x, float y, float clientW, float clientH);
 		std::string VPADCallers();
 		// diagnostics: the motion values the game was given last (pose, attitude matrix, angles, rates)
 		std::string MotionInfo();

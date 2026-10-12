@@ -74,6 +74,7 @@ namespace pce::Overlay
 			Action action = Action::Count;
 			std::function<void()> onPress;
 			bool restart = false;
+			bool rebuild = false; // other items depend on this one: the pages are built again after a change
 		};
 
 		struct Page
@@ -161,6 +162,8 @@ namespace pce::Overlay
 				p.items.push_back(toggle("Toggle Sprint", &sEdit.toggleSprint, "On: press the Sprint key once to keep sprinting while you move. Press it again or stand still to stop. Off: hold the key."));
 				p.items.push_back(toggle("Toggle Lock On / Shield", &sEdit.toggleShield, "On: press the Lock On key once to keep the shield raised and the target locked, press it again to lower it. Off: hold the key. Crouching is always a toggle in the game."));
 				p.items.push_back(slider("Weapon Wheel Delay", &sEdit.wheelReleaseDelayMs, 150.0f, 1200.0f, 25.0f, "%.0f ms", "How long the weapon selector stays open after the last mouse wheel step."));
+				p.items.push_back(toggle("Selectors: Move Keys", &sEdit.selectorMoveKeys, "On: while a weapon, bow, shield or rune selector is open, the Move Left / Move Right keys step through it. The mouse and the wheel keep working."));
+				p.items.push_back(toggle("Inventory: Move Keys", &sEdit.inventoryMoveKeys, "On: Move Left / Move Right move the cursor in the inventory, like Move Forward / Back do. The pages (Adventure Log, Inventory, System) are then switched with the Inventory: Previous / Next Page keys (Controls). Off: Move Left / Move Right switch the pages."));
 				pages.push_back(std::move(p));
 			}
 			{
@@ -197,10 +200,22 @@ namespace pce::Overlay
 			}
 			{
 				Page p{"Graphics"};
+				{
+					Item it = choice("Aspect Ratio", &sEdit.aspectRatio, Graphics::GetAspectOptions(),
+									 "Shape of the picture. Automatic: 21:9 or 32:9 on such a display, 16:9 on every other. With another "
+									 "shape than the window's, the picture gets bars. Applied on next launch.", true);
+					it.rebuild = true;
+					p.items.push_back(it);
+				}
+				const int aspect = Graphics::EffectiveAspect(sEdit.aspectRatio);
 				std::vector<std::string> res;
-				for (auto& r : Graphics::GetResolutionOptions())
+				for (auto& r : Graphics::GetResolutionOptions(aspect))
 					res.push_back(r.label);
 				p.items.push_back(choice("Resolution", &sEdit.resolutionPreset, res, "Internal rendering resolution. Applied on next launch.", true));
+				if (aspect >= 3)
+					p.items.push_back(choice("Ultrawide HUD", &sEdit.ultrawideHud, {"At the screen edges", "Centred"},
+											 "Where hearts, map and prompts are on an ultrawide picture: at its edges, or within a 16:9 area "
+											 "in the middle. Applied on next launch.", true));
 				p.items.push_back(choice("Frame Rate", &sFpsIndex, {"30 FPS", "60 FPS", "90 FPS", "120 FPS", "144 FPS", "165 FPS", "240 FPS"},
 										 "Frame rate limit. Game speed and physics are corrected automatically. Above 60 FPS, turn V-Sync off "
 										 "unless your display runs at that refresh rate."));
@@ -321,6 +336,13 @@ namespace pce::Overlay
 			Commit();
 			if (it.restart)
 				Toast("This change takes effect the next time the game starts");
+			if (it.rebuild)
+			{
+				// (the item is gone after this: nothing may use it any more)
+				const int selected = sSel;
+				sPages = BuildPages();
+				sSel = std::clamp(selected, 0, std::max(0, (int)sPages[sPage].items.size() - 1));
+			}
 		}
 
 		void Activate(Item& it)
@@ -620,11 +642,21 @@ namespace pce::Overlay
 				return;
 			ImGuiIO& io = ImGui::GetIO();
 			ImDrawList* dl = ImGui::GetBackgroundDrawList();
-			const float W = io.DisplaySize.x, H = io.DisplaySize.y;
+			// (the prompts are positions in the game's picture, which has bars in a window of another shape)
+			float X = 0.0f, Y = 0.0f, W = io.DisplaySize.x, H = io.DisplaySize.y;
+			int px, py, pw, ph, ww, wh;
+			if (Graphics::GetPictureArea(px, py, pw, ph, ww, wh))
+			{
+				const float kx = io.DisplaySize.x / (float)ww, ky = io.DisplaySize.y / (float)wh;
+				X = px * kx;
+				Y = py * ky;
+				W = pw * kx;
+				H = ph * ky;
+			}
 			std::vector<ImVec2> drawn;
 			for (const auto& p : prompts)
 			{
-				const ImVec2 c((p.rect.x0 + p.rect.x1) * 0.5f * W, (p.rect.y0 + p.rect.y1) * 0.5f * H);
+				const ImVec2 c(X + (p.rect.x0 + p.rect.x1) * 0.5f * W, Y + (p.rect.y0 + p.rect.y1) * 0.5f * H);
 				bool dup = false;
 				for (auto& d : drawn)
 					dup |= std::fabs(d.x - c.x) < 4.0f && std::fabs(d.y - c.y) < 4.0f;

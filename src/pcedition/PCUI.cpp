@@ -2,6 +2,7 @@
 #include "pcedition/PCInput.h"
 #include "pcedition/PCPrompts.h"
 #include "pcedition/PCSettings.h"
+#include "pcedition/PCGraphics.h"
 
 #include <mutex>
 #include <chrono>
@@ -678,8 +679,8 @@ namespace pce::UI
 				case 0xE040: g = lmb; break;                                   // select = click
 				case 0xE041: g = KeyGlyph(Key::Escape); break;                 // back = Esc
 				case 0xE043: g = act(pce::Action::Crouch); break;                   // Y (sort ...) = crouch key in menus
-				case 0xE044: g = pause ? act(pce::Action::MoveLeft) : 0; break;     // inventory pages: A / D
-				case 0xE045: g = pause ? act(pce::Action::MoveRight) : 0; break;
+				case 0xE044: g = pause ? act(s.inventoryMoveKeys ? pce::Action::MenuPrevPage : pce::Action::MoveLeft) : 0; break; // inventory pages: A / D
+				case 0xE045: g = pause ? act(s.inventoryMoveKeys ? pce::Action::MenuNextPage : pce::Action::MoveRight) : 0; break;
 				case 0xE05F: g = (screen.rfind("AppHome", 0) == 0 || screen.rfind("AppMap", 0) == 0) ? kGlyphWheelUpDown : 0; break;
 				default: break;
 				}
@@ -1259,6 +1260,16 @@ namespace pce::UI
 			}
 		}
 
+		// How much wider than 16:9 the picture is (1 for 16:9, 1.33 for 21:9, 2 for 32:9). With the ultrawide HUD fix of
+		// the graphics pack the menus keep their shape, so their entries are that much narrower as fractions of the picture.
+		float PictureWiden()
+		{
+			int x, y, w, h, ww, wh;
+			if (!Graphics::GetPictureArea(x, y, w, h, ww, wh))
+				return 1.0f;
+			return std::max(1.0f, ((float)w / (float)h) / (16.0f / 9.0f));
+		}
+
 		void ComputePointer(PointerSnapshot& ps)
 		{
 			RebuildRoots();
@@ -1295,6 +1306,7 @@ namespace pce::UI
 				WalkLayout(root, false, ps, none, parts, ModalLevel(scr));
 			}
 			auto onScreen = [](const Rect& r) { return r.cx() > 0.0f && r.cx() < 1.0f && r.cy() > 0.0f && r.cy() < 1.0f; };
+			const float widen = PictureWiden();
 			std::vector<std::pair<int, Target>> ordered;
 			int topLevel = 0;
 			for (auto& [part, pi] : parts)
@@ -1320,7 +1332,7 @@ namespace pce::UI
 				t.group = pi.group;
 				t.tab = pi.isTab ? 0 : -1;
 				const float hw = pi.hit.x1 - pi.hit.x0, hh = pi.hit.y1 - pi.hit.y0;
-				if (onScreen(pi.hit) && hw > 0.02f && hh > 0.02f)
+				if (onScreen(pi.hit) && hw * widen > 0.02f && hh > 0.02f)
 					t.rect = pi.hit;
 				else if (pi.hasText && onScreen(pi.text))
 				{

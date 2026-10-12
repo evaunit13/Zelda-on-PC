@@ -54,6 +54,8 @@ HUD**, so the interface is drawn on top at full sharpness instead of being inter
   scope, while climbing and in conversations.
 - **Every action rebindable**, two keys per action, with conflict highlighting.
 - **Weapons on the mouse wheel**, arrows while aiming. Hold `1` – `4` for the weapon, bow, shield and rune selectors.
+  As an option (`Esc` → **Camera**), the movement keys step through an open selector and move the cursor in the
+  inventory.
 - **Toggle modes** for sprint and for lock on / shield, for everyone who cannot or does not want to hold a key down.
 - Perfect guard with the attack button while the shield is up, flurry rush with mouse clicks, the jump key closes and
   reopens the paraglider.
@@ -82,6 +84,8 @@ glyphs are drawn for this project in the style of the game.
   `settings.ini`.
 - Resolution from 720p to 4K, frame rate limits from 30 to 240 FPS with corrected game speed and physics, shadows,
   anti-aliasing, V-Sync.
+- **Aspect ratio:** 16:9, 16:10, 21:9 and 32:9, with the HUD at the edges of the screen or centred on ultrawide. An
+  ultrawide main display is detected. New, and so far tried in a window only, not on an ultrawide display.
 - Inventory, map and Adventure Log open directly on their page (`Tab` / `I`, `M`, `J`).
 - **Language and units:** the text language is picked from the ones your copy of the game has, and the temperature
   can be shown in Celsius or Fahrenheit whatever the region of the game is.
@@ -136,6 +140,7 @@ All of these are defaults. Change them in `Esc` → **Controls**.
 | Lock on / shield | `Q` / Mouse 4 | | Scope | Middle mouse / `Z` |
 | Action / interact | `E` | | Whistle | `X` |
 | Use rune | `F` | | Throw weapon | `R` |
+| Inventory: previous / next page | `Page Up` / `Page Down`, or `A` / `D` | | | |
 
 Controllers are not handled by this build. For controller play, the game runs just as well in regular Cemu.
 
