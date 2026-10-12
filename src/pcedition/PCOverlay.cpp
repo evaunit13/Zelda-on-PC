@@ -210,8 +210,9 @@ namespace pce::Overlay
 										 "you see: the game runs at half of it (120 FPS = 60 real + 60 generated). Adds about one game frame of "
 										 "input lag. Game logic and physics are never affected."));
 				p.items.push_back(toggle("CPU Thread Pinning", &sEdit.cpuPinning,
-										 "Keeps the emulated Wii U CPU cores and the GPU thread on separate cores that share one cache (Ryzen CCX). "
-										 "Higher and steadier frame rate on most CPUs."));
+										 "Experimental. Ties the emulated Wii U CPU cores and the GPU thread to fixed processor cores that share one "
+										 "cache. A small gain on some CPUs, a large loss on others (Ryzen X3D with two cache groups): leave it off "
+										 "unless it helps on yours."));
 				p.items.push_back(toggle("Show FPS", &sEdit.showFps, "Shows the game frame rate and, with Frame Generation, the displayed frame rate."));
 				p.items.push_back(choice("Anti-Aliasing", &sEdit.antiAliasing, Graphics::GetAAOptions(), ""));
 				p.items.push_back(choice("Shadow Quality", &sEdit.shadowPreset, Graphics::GetShadowOptions(), "Shadow resolution and distance. Applied on next launch.", true));

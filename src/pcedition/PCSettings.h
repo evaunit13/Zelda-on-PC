@@ -116,7 +116,10 @@ namespace pce
 		int antiAliasing = 1;
 		float fov = 1.0f;                   // field of view multiplier (if supported)
 		bool showFps = false;
-		bool cpuPinning = true;             // pin the emulated CPU cores / GPU thread to one L3 cache group (Ryzen CCX)
+		// Pin the emulated CPU cores / GPU thread to four cores of one L3 cache group. Off by default: about +1 % on the
+		// Ryzen 7 4800H it was measured on, but it broke the frame pacing on a Ryzen 9 9950X3D (two cache groups, Windows
+		// already keeps the game on the V-Cache one), and a thread tied to one core cannot get out of the way of others.
+		bool cpuPinning = false;
 		int frameGeneration = 0;            // 0 off, 1 AMD FSR 3 frame generation
 
 		// display

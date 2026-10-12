@@ -207,7 +207,9 @@ namespace pce
 			Get(m, "Graphics", "ShowFPS", s.showFps);
 			Get(m, "Graphics", "FrameGeneration", s.frameGeneration);
 			s.frameGeneration = std::clamp(s.frameGeneration, 0, 1); // 2 was the removed camera warp
-			Get(m, "Graphics", "CPUPinning", s.cpuPinning);
+			// "CPUPinning" was the key while the option was on by default: it is not read any more, so everybody starts
+			// with the new default
+			Get(m, "Graphics", "PinThreads", s.cpuPinning);
 			Get(m, "Display", "Fullscreen", s.fullscreen);
 			Get(m, "Game", "Path", s.gamePath);
 			Get(m, "Game", "Language", s.language);
@@ -275,7 +277,7 @@ namespace pce
 		o << "AntiAliasing=" << s.antiAliasing << "\n";
 		o << "FOV=" << s.fov << "\n";
 		o << "ShowFPS=" << b(s.showFps) << "\n";
-		o << "CPUPinning=" << b(s.cpuPinning) << "\n";
+		o << "PinThreads=" << b(s.cpuPinning) << "\n";
 		o << "FrameGeneration=" << s.frameGeneration << "\n\n";
 		o << "[Display]\n";
 		o << "Fullscreen=" << b(s.fullscreen) << "\n\n";
