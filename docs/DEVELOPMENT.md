@@ -19,7 +19,7 @@ number of hooks in the emulator. This page says where things are and how to work
 
 | File | Role |
 |---|---|
-| `PCEdition` | Startup: command line, paths, finding the game dump (title folders or `.wua`) and reading files from it, forcing Cemu's configuration, save import. |
+| `PCEdition` | Startup: command line, paths, finding the game dump (title folders, `.wua`, `.wud` / `.wux` disc images) and reading files from it, forcing Cemu's configuration, save import. |
 | `PCSettings` | `settings.ini`, key bindings. |
 | `PCInput` | Raw Input thread; serves the game's `VPADRead` directly; camera, motion (tilt) and context logic. |
 | `PCCamera` | Mouse to stick conversion for the camera modes without a direct hook. |
@@ -85,7 +85,7 @@ shows the icon of the player's own dump (`PCIcon`).
 | `--cemu-ui` | Plain Cemu interface (game list, debugger, graphic pack window) instead of the kiosk mode. |
 | `--pce-dev` | Developer mode: separate state in `data_dev` (never touches the player's saves), verbose log, developer bridge. |
 | `--extract-icon <game folder> <out.ico>` | Writes the game's icon from a dump and exits (used by the installer for the shortcuts). |
-| `--check-game <game folder>` | Exits with what it finds there, as bits: 1 base game, 2 update, 4 the update is 1.5.0, 8 DLC (used by the installer; this is how it understands `.wua` archives). |
+| `--check-game <game folder>` | Exits with what it finds there, as bits: 1 base game, 2 update, 4 the update is 1.5.0, 8 DLC; or with 16 when a disc image is there but not its key (used by the installer; this is how it understands `.wua` archives and disc images). |
 
 ## Developer mode
 

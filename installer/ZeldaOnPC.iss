@@ -79,6 +79,7 @@ var
   GamePage: TInputDirWizardPage;
   FoundBase, FoundUpdate, FoundDlc: String;
   FoundUpdateVersion: Integer;
+  DiscKeyMissing: Boolean; { the program found a disc image whose key it does not have }
   GameIcon: Boolean;
 
 function MultiByteToWideChar(CodePage: UINT; dwFlags: DWORD; const lpMultiByteStr: AnsiString; cbMultiByte: Integer;
@@ -218,21 +219,28 @@ begin
   Result := FoundBase <> '';
 end;
 
-{ A Wii U archive (.wua): the path itself, or a file directly in the folder. }
-function HasArchive(const Dir: String): Boolean;
+{ A file with this extension: the path itself, or a file directly in the folder. }
+function HasFileOfType(const Dir, Ext: String): Boolean;
 var
   FindRec: TFindRec;
 begin
-  Result := (CompareText(ExtractFileExt(Dir), '.wua') = 0) and FileExists(Dir);
-  if not Result and DirExists(Dir) and FindFirst(AddBackslash(Dir) + '*.wua', FindRec) then
+  Result := (CompareText(ExtractFileExt(Dir), Ext) = 0) and FileExists(Dir);
+  if not Result and DirExists(Dir) and FindFirst(AddBackslash(Dir) + '*' + Ext, FindRec) then
   begin
     Result := True;
     FindClose(FindRec);
   end;
 end;
 
-{ Asks the program itself what it finds (it reads archives too): ZeldaOnPC.exe --check-game answers with a set of
-  bits, 1 base game, 2 update, 4 the update is 1.5.0, 8 DLC. The executable is unpacked to the temporary folder. }
+{ A Wii U archive (.wua) or a disc image (.wud, .wux). }
+function HasArchive(const Dir: String): Boolean;
+begin
+  Result := HasFileOfType(Dir, '.wua') or HasFileOfType(Dir, '.wud') or HasFileOfType(Dir, '.wux');
+end;
+
+{ Asks the program itself what it finds (it reads archives and disc images too): ZeldaOnPC.exe --check-game answers
+  with a set of bits, 1 base game, 2 update, 4 the update is 1.5.0, 8 DLC; or with 16: a disc image is there, but not
+  the key of that disc. The executable is unpacked to the temporary folder. }
 function LocateWithProgram(const Dir: String): Boolean;
 var
   Arg: String;
@@ -243,6 +251,7 @@ begin
   FoundUpdate := '';
   FoundDlc := '';
   FoundUpdateVersion := 0;
+  DiscKeyMissing := False;
   Arg := Dir;
   if (Arg <> '') and (Arg[Length(Arg)] = '\') then
     Arg := Arg + '\';
@@ -253,6 +262,7 @@ begin
   end;
   if not Exec(ExpandConstant('{tmp}\{#AppExe}'), '--check-game "' + Arg + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) then
     Exit;
+  DiscKeyMissing := ResultCode = 16;
   if (ResultCode <= 0) or (ResultCode > 15) or (ResultCode and 1 = 0) then
     Exit;
   FoundBase := Dir;
@@ -316,7 +326,8 @@ begin
   GamePage := CreateInputDirPage(wpSelectDir, 'Game files',
     'Where is your copy of The Legend of Zelda: Breath of the Wild?',
     'Select the folder that holds your own dump of the game (Wii U version): the base game, the update 1.5.0 and, ' +
-    'if you have it, the DLC. They can be folders with "code", "content" and "meta" inside, or a .wua archive.' + #13#10#13#10 +
+    'if you have it, the DLC. They can be folders with "code", "content" and "meta" inside, or a .wua archive; the ' +
+    'base game can also be a .wud / .wux disc image with its key file.' + #13#10#13#10 +
     'You can select the folder that contains them, or the base game folder itself.',
     False, '');
   GamePage.Add('');
@@ -336,6 +347,7 @@ end;
 function NextButtonClick(CurPageID: Integer): Boolean;
 var
   Dir: String;
+  Located: Boolean;
 begin
   Result := True;
   if CurPageID <> GamePage.ID then
@@ -352,10 +364,16 @@ begin
     end;
     Exit;
   end;
-  if not LocateGame(Dir, True) then
+  Located := LocateGame(Dir, True);
+  if (not Located) and DiscKeyMissing then
+    Result := SuppressibleMsgBox('A disc image of the game is in this folder, but not the key of that disc.' + #13#10#13#10 +
+      'Disc images (.wud, .wux) are encrypted. Put the key file your dumping tool wrote next to the image (same name, ' +
+      'extension .key). A keys.txt of a Cemu installation that has the key is read as well.' + #13#10#13#10 +
+      'Use this folder anyway?', mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDYES) = IDYES
+  else if not Located then
     Result := SuppressibleMsgBox('The game was not found in this folder.' + #13#10#13#10 +
-      'It has to contain the base game as a folder with "code", "content" and "meta" inside, or as a .wua archive ' +
-      '(directly, or up to three levels below). Disc images (.wud, .wux) are not supported.' + #13#10#13#10 +
+      'It has to contain the base game as a folder with "code", "content" and "meta" inside, as a .wua archive or ' +
+      'as a .wud / .wux disc image (directly, or up to three levels below).' + #13#10#13#10 +
       'Use this folder anyway?', mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDYES) = IDYES
   else if FoundUpdateVersion <> RequiredUpdateVersion then
     Result := SuppressibleMsgBox('The base game was found, but not the update 1.5.0, which is required.' + #13#10#13#10 +

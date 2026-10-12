@@ -41,7 +41,9 @@ namespace pce
 	// usually holds base game, update and DLC in one file). The titles may sit anywhere below the configured folder,
 	// next to the base game, or in the title folder of an existing Cemu installation.
 	fs::path GetGameRoot();        // configured folder (or .wua file)
-	fs::path GetBaseTitlePath();   // base game: title folder, or the archive that holds it (what Cemu is told to launch)
+	fs::path GetBaseTitlePath();   // base game: title folder, or the archive / disc image that holds it (what Cemu is told to launch)
+	// a disc image (.wud / .wux) that was found while looking for the game and could not be opened: its key is missing
+	fs::path GetDiscImageWithoutKey();
 	fs::path GetUpdateTitlePath(); // update: title folder or archive (empty if not found)
 	fs::path GetAocTitlePath();    // DLC: title folder or archive (empty if not found)
 	// archives that have to be made known to Cemu's title list before the launch (update / DLC in an archive)

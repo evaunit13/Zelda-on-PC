@@ -372,11 +372,20 @@ bool CemuApp::OnInit()
 		wxc.did_show_vulkan_warning = true;
 		wxc.fullscreen = pce::GetSettings().fullscreen && !pce::ForceWindowed();
 		pce::Graphics::ApplySettingsToPacks();
+		if (!pce::IsGameAvailable() && !pce::GetDiscImageWithoutKey().empty())
+		{
+			pce::FatalError(fmt::format("A disc image of the game was found, but not the key of that disc:\n\n{}\n\n"
+										"Disc images are encrypted. Put the key file your dumping tool wrote (16 bytes, same name as the "
+										"image with the extension .key) next to the image, or add the key as a line of 32 hex digits to "
+										"data\\keys.txt next to the executable. A keys.txt of a Cemu installation is read as well.",
+										_pathToUtf8(pce::GetDiscImageWithoutKey())));
+			exit(0);
+		}
 		if (!pce::IsGameAvailable())
 		{
 			pce::FatalError("Your copy of The Legend of Zelda: Breath of the Wild could not be found.\n\n"
 							"Run the installer again and select the folder that holds your game dump (base game, update 1.5.0 and DLC, as "
-							"folders with code / content / meta or as a .wua archive), or set it in settings.ini next to the "
+							"folders with code / content / meta, as a .wua archive, or the base game as a .wud / .wux disc image), or set it in settings.ini next to the "
 							"executable:\n\n[Game]\nPath=...");
 			exit(0);
 		}

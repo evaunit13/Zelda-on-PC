@@ -13,6 +13,10 @@
 #include <pugixml.hpp>
 #include <zarchive/zarchivereader.h>
 
+#include "Cafe/Filesystem/FST/FST.h"
+#include "Cafe/Filesystem/WUD/wud.h"
+#include "util/crypto/aes128.h"
+
 #include "config/ActiveSettings.h"
 #include "config/CemuConfig.h"
 
@@ -26,22 +30,149 @@ namespace pce
 		fs::path sExeDir;
 		fs::path sGameRoot;
 
-		// A title of the game: a folder with code / content / meta, or such a folder inside a Wii U archive (.wua). An
-		// archive holds one folder per title in its root, named <title id>_v<version>.
+		// A title of the game: a folder with code / content / meta, such a folder inside a Wii U archive (.wua), or the
+		// game partition of a disc image (.wud / .wux). An archive holds one folder per title in its root, named
+		// <title id>_v<version>. A disc image holds the base game only and is encrypted with the key of that disc.
 		struct GameTitle
 		{
 			uint64 titleId = 0;
 			uint32 version = 0;
-			fs::path path;       // title folder, or the archive file
-			std::string subPath; // folder of the title inside the archive (empty for a title folder)
+			fs::path path;       // title folder, or the archive / disc image file
+			std::string subPath; // folder of the title inside the archive (empty otherwise)
+			bool disc = false;   // path is a disc image
 			bool empty() const { return path.empty(); }
-			std::string describe() const { return subPath.empty() ? _pathToUtf8(path) : _pathToUtf8(path) + " [" + subPath + "]"; }
+			bool folder() const { return subPath.empty() && !disc; }
+			std::string describe() const
+			{
+				return disc ? _pathToUtf8(path) + " [disc image]" : (subPath.empty() ? _pathToUtf8(path) : _pathToUtf8(path) + " [" + subPath + "]");
+			}
 		};
 		GameTitle sBase, sUpdate, sAoc;
 
-		// archives that are in use stay open (their file table is large)
+		// archives and disc images that are in use stay open (their file tables are large)
 		std::mutex sArchiveMutex;
 		std::map<fs::path, std::unique_ptr<ZArchiveReader>> sArchives;
+		std::map<fs::path, std::unique_ptr<FSTVolume>> sDiscs;
+		fs::path sDiscWithoutKey;  // a disc image that could not be opened because its key was not found
+		fs::path sDiscKeySource;   // the keys.txt the key of the base game's disc image came from (empty: its own .key file)
+		NCrypto::AesKey sDiscKey{};
+
+		fs::path RoamingAppData();
+
+		bool IsDiscImage(const fs::path& p)
+		{
+			std::error_code ec;
+			const std::string ext = _pathToUtf8(p.extension());
+			return (boost::iequals(ext, ".wud") || boost::iequals(ext, ".wux")) && fs::is_regular_file(p, ec);
+		}
+
+		// the AES keys of a keys.txt: one key of 32 hex digits at the start of a line, the rest of the line is a comment
+		void ReadKeysTxt(const fs::path& file, std::vector<NCrypto::AesKey>& out)
+		{
+			std::ifstream f(file);
+			std::string line;
+			while (f && std::getline(f, line))
+			{
+				std::string hex;
+				for (char c : line)
+				{
+					if (c == '#')
+						break;
+					if (std::isxdigit((unsigned char)c))
+						hex.push_back(c);
+					else if (c != ' ' && c != '\t' && c != '\r' && c != '-')
+						break;
+				}
+				if (hex.size() != 32)
+					continue;
+				NCrypto::AesKey key{};
+				for (size_t i = 0; i < 16; i++)
+					key.b[i] = (uint8)std::stoul(hex.substr(i * 2, 2), nullptr, 16);
+				out.push_back(key);
+			}
+		}
+
+		// The key of a disc image: the key file the dumping tools write next to it (same name, .key, 16 bytes), or a key
+		// from the keys.txt of this program or of a Cemu installation. The right key decrypts a part of the disc header
+		// to zeroes (the same test Cemu makes).
+		bool FindDiscKey(const fs::path& image, NCrypto::AesKey& key, fs::path& source)
+		{
+			AES128_init(); // (the command line tools run before Cemu has set up its AES functions; doing it twice is harmless)
+			uint8 header[16 * 3]{};
+			wud_t* wud = wud_open(image);
+			if (!wud)
+				return false;
+			const bool readOk = wud_readData(wud, header, sizeof(header), 0x18000 + 0x100) == sizeof(header);
+			wud_close(wud);
+			if (!readOk)
+				return false;
+			auto fits = [&](const NCrypto::AesKey& k) {
+				uint8 plain[sizeof(header) - 16];
+				AES128_CBC_decrypt(plain, header + 16, sizeof(plain), k.b, header);
+				return std::all_of(plain, plain + sizeof(plain), [](uint8 v) { return v == 0; });
+			};
+			fs::path keyFile = image;
+			keyFile.replace_extension("key");
+			NCrypto::AesKey fileKey{};
+			bool hasFileKey = false;
+			if (std::ifstream f(keyFile, std::ios::binary); f && f.read((char*)fileKey.b, sizeof(fileKey.b)))
+			{
+				hasFileKey = true;
+				if (fits(fileKey))
+				{
+					key = fileKey;
+					source.clear();
+					return true;
+				}
+			}
+			for (const fs::path& txt : {sExeDir / "data" / "keys.txt", sExeDir / "data_dev" / "keys.txt", RoamingAppData() / "Cemu" / "keys.txt"})
+			{
+				std::vector<NCrypto::AesKey> keys;
+				ReadKeysTxt(txt, keys);
+				for (const auto& k : keys)
+				{
+					if (fits(k))
+					{
+						key = k;
+						source = txt;
+						return true;
+					}
+				}
+			}
+			// a key file that does not pass the test is still tried, like Cemu does
+			if (hasFileKey)
+			{
+				key = fileKey;
+				source.clear();
+			}
+			return hasFileKey;
+		}
+
+		// the opened game partition of a disc image (nullptr: not a disc image, no key, wrong key)
+		FSTVolume* OpenDisc(const fs::path& image)
+		{
+			std::lock_guard lock(sArchiveMutex);
+			auto it = sDiscs.find(image);
+			if (it != sDiscs.end())
+				return it->second.get();
+			NCrypto::AesKey key{};
+			fs::path source;
+			if (!FindDiscKey(image, key, source))
+			{
+				sDiscWithoutKey = image;
+				return nullptr;
+			}
+			FSTVolume* volume = FSTVolume::OpenFromDiscImage(image, key);
+			if (!volume)
+			{
+				sDiscWithoutKey = image;
+				return nullptr;
+			}
+			sDiscs[image].reset(volume);
+			sDiscKey = key;
+			sDiscKeySource = source;
+			return volume;
+		}
 
 		bool IsArchive(const fs::path& p)
 		{
@@ -67,6 +198,13 @@ namespace pce
 			if (t.empty())
 				return -1;
 			std::error_code ec;
+			if (t.disc)
+			{
+				FSTVolume* volume = OpenDisc(t.path);
+				FSTFileHandle file;
+				std::lock_guard lock(sArchiveMutex);
+				return volume && volume->OpenFile(rel, file, true) ? (sint64)volume->GetFileSize(file) : -1;
+			}
 			if (t.subPath.empty())
 			{
 				const uint64 size = fs::file_size(t.path / _utf8ToPath(rel), ec);
@@ -86,6 +224,16 @@ namespace pce
 		{
 			if (t.empty())
 				return false;
+			if (t.disc)
+			{
+				FSTVolume* volume = OpenDisc(t.path);
+				FSTFileHandle file;
+				std::lock_guard lock(sArchiveMutex);
+				if (!volume || !volume->OpenFile(rel, file, true))
+					return false;
+				out.resize(volume->GetFileSize(file));
+				return volume->ReadFile(file, 0, (uint32)out.size(), out.data()) == out.size();
+			}
 			if (t.subPath.empty())
 			{
 				std::ifstream f(t.path / _utf8ToPath(rel), std::ios::binary);
@@ -180,14 +328,30 @@ namespace pce
 			}
 		}
 
+		// the base game in a disc image
+		void CollectDiscTitle(const fs::path& file, std::vector<GameTitle>& out)
+		{
+			GameTitle t;
+			t.path = file;
+			t.disc = true;
+			std::vector<uint8> xml;
+			if (ReadTitleFile(t, "code/app.xml", xml) && ParseAppXml(xml.data(), xml.size(), t) && IsGameRegion((uint32)t.titleId))
+				out.push_back(t);
+		}
+
 		// collect the game's titles below a folder (limited depth; title folders are not searched further). The folder
-		// may also be an archive file itself.
+		// may also be an archive or a disc image file itself.
 		void CollectTitles(const fs::path& dir, int depth, std::vector<GameTitle>& out)
 		{
 			std::error_code ec;
 			if (IsArchive(dir))
 			{
 				CollectArchiveTitles(dir, out);
+				return;
+			}
+			if (IsDiscImage(dir))
+			{
+				CollectDiscTitle(dir, out);
 				return;
 			}
 			if (!fs::is_directory(dir, ec))
@@ -202,7 +366,7 @@ namespace pce
 				return;
 			for (auto& e : fs::directory_iterator(dir, ec))
 			{
-				if (e.is_directory(ec) || IsArchive(e.path()))
+				if (e.is_directory(ec) || IsArchive(e.path()) || IsDiscImage(e.path()))
 					CollectTitles(e.path(), depth - 1, out);
 			}
 		}
@@ -225,9 +389,10 @@ namespace pce
 		bool LocateGame(const fs::path& root)
 		{
 			std::vector<GameTitle> titles;
+			sDiscWithoutKey.clear();
 			CollectTitles(root, 3, titles);
-			// the base game itself was given (folder or archive): update and DLC are usually right next to it
-			if (ReadLooseTitle(root) || IsArchive(root))
+			// the base game itself was given (folder, archive or disc image): update and DLC are usually right next to it
+			if (ReadLooseTitle(root) || IsArchive(root) || IsDiscImage(root))
 				CollectTitles(root.parent_path(), 1, titles);
 			const GameTitle* base = nullptr;
 			for (auto& t : titles)
@@ -366,8 +531,26 @@ namespace pce
 			c.game_paths.clear();
 			for (const GameTitle* t : {&sBase, &sUpdate, &sAoc})
 			{
-				if (!t->empty() && t->subPath.empty())
+				if (!t->empty() && t->folder())
 					c.game_paths.emplace_back(_pathToUtf8(t->path));
+			}
+			// Cemu opens a disc image with a key from the keys.txt of its data folder (or the .key file next to the
+			// image). A key that was found in another keys.txt (a Cemu installation) is added to ours.
+			if (sBase.disc && !sDiscKeySource.empty())
+			{
+				std::error_code ec;
+				const fs::path ours = GetDataDir() / "keys.txt";
+				std::vector<NCrypto::AesKey> have;
+				ReadKeysTxt(ours, have);
+				if (std::none_of(have.begin(), have.end(), [](const NCrypto::AesKey& k) { return memcmp(k.b, sDiscKey.b, sizeof(k.b)) == 0; }))
+				{
+					fs::create_directories(ours.parent_path(), ec);
+					std::string hex;
+					for (uint8 v : sDiscKey.b)
+						hex += fmt::format("{:02x}", v);
+					std::ofstream f(ours, std::ios::app);
+					f << "\n" << hex << " # disc key of the game (found in " << _pathToUtf8(sDiscKeySource) << ")\n";
+				}
 			}
 			Settings s = GetSettings();
 			c.vsync = s.vsync ? 1 : 0;
@@ -404,7 +587,7 @@ namespace pce
 			if (!boost::iequals(args[i], L"--check-game"))
 				continue;
 			if (i + 1 >= args.size() || !LocateGame(fs::path(args[i + 1])))
-				return 0;
+				return sDiscWithoutKey.empty() ? 0 : 16; // 16: a disc image is there, its key is not
 			return 1 | (sUpdate.empty() ? 0 : 2) | (sUpdateVersion == kRequiredUpdateVersion ? 4 : 0) | (sAoc.empty() ? 0 : 8);
 		}
 		return std::nullopt;
@@ -515,6 +698,11 @@ namespace pce
 	fs::path GetAocTitlePath()
 	{
 		return sAoc.path;
+	}
+
+	fs::path GetDiscImageWithoutKey()
+	{
+		return sDiscWithoutKey;
 	}
 
 	std::vector<fs::path> GetGameArchives()
