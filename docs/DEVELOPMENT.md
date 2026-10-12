@@ -61,11 +61,11 @@ Output: `bin\ZeldaOnPC_release.exe`. It runs from `bin` once `bin\settings.ini` 
 (`[Game]` / `Path=`), or when an existing Cemu installation already knows it.
 
 ```bat
-powershell -ExecutionPolicy Bypass -File tools\package.ps1 -Version 1.1.3
+powershell -ExecutionPolicy Bypass -File tools\package.ps1 -Version 1.1.4
 ```
 
-stages the files in `build\stage` and builds `installer\output\ZeldaOnPC-Setup-1.1.3.exe`. Silent installation for
-tests: `ZeldaOnPC-Setup-1.1.3.exe /VERYSILENT /GAMEDIR="D:\Games\BotW" /DIR="D:\Test"`.
+stages the files in `build\stage` and builds `installer\output\ZeldaOnPC-Setup-1.1.4.exe`. Silent installation for
+tests: `ZeldaOnPC-Setup-1.1.4.exe /VERYSILENT /GAMEDIR="D:\Games\BotW" /DIR="D:\Test"`.
 
 Regenerating the art (Python 3 with Pillow and NumPy):
 
@@ -108,6 +108,7 @@ Useful commands (the full list is the `if (c == "...")` chain in `PCDevBridge.cp
 |---|---|
 | `uistate`, `uitexts`, `uitree <screen>`, `pointer`, `cursor` | Interface model |
 | `buttons <mask>`, `stick ...`, `vkeys ...`, `vmouse x y [l] [r]`, `vwheel n` | Input injection |
+| `picmap <x> <y> <client width> <client height>` | Where a point of the window lies in the picture (it keeps its shape, so a window of another shape has bars) |
 | `read32` / `readf` / `readhex`, `write32` / `writef` | Game memory |
 | `logbp <addr> <text with {r3} ...>`, `membp <addr>`, `bpdel <addr>` | Logging breakpoints (written to `log.txt`) |
 | `scan ...`, `snap` / `sdiff` | Memory search for values that changed |
