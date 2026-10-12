@@ -480,7 +480,8 @@ namespace pce::Prompts
 			return;
 		// every text the PC layer looks for (PCInput, PCMenus, PCUI)
 		static const std::set<std::string> kTexts = {"Place pin", "Throw", "Quit",  "Cancel", "Detonate", "Let go", "Skip", "Dash",
-													 "Push",      "Pull",  "Far",   "Near",   "Jump",     "Save",   "Load"};
+													 "Push",      "Pull",  "Far",   "Near",   "Jump",     "Save",   "Load",
+													 "Drop",      "Put away"};
 		std::unordered_map<std::string, std::string> english, local;
 		const bool ok = LoadMessages("en", [&](const std::string&, const std::string& text) { return kTexts.count(text) != 0; }, english) &&
 						LoadMessages(language, [&](const std::string& label, const std::string&) { return english.count(label) != 0; }, local);

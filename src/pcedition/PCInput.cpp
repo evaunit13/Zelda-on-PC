@@ -1439,14 +1439,21 @@ namespace pce::Input
 				const bool cancel = ui.Has("Cancel");
 				const bool detonate = ui.Has("Detonate");
 				const bool throwIt = ui.Has("Throw");
+				// materials in the hands: the attack button only lets them fall, the left click places them like the
+				// game's "Drop" (an Octo Balloon attaches to what it is placed on), the right click puts them away
+				const bool heldItems = ui.HeldItems();
 				if (throwIt && down(Action::Attack))
 					remap(Action::Attack, VPAD_Y, btnOr("Throw", VPAD_R)); // throw bomb / held object
+				else if (heldItems && down(Action::Attack))
+					remap(Action::Attack, VPAD_Y, btnOr("Drop", VPAD_A));
 				else if (cancel && down(Action::Attack))
 					remap(Action::Attack, VPAD_Y, VPAD_A); // rune: activate (stasis, magnesis grab, cryonis, ...)
 				if (detonate && down(Action::Bow))
 					remap(Action::Bow, VPAD_ZR, btnOr("Detonate", VPAD_L)); // remote bomb
 				else if (cancel && down(Action::Bow))
 					remap(Action::Bow, VPAD_ZR, btnOr("Cancel", VPAD_B)); // rune: cancel
+				else if (heldItems && down(Action::Bow))
+					remap(Action::Bow, VPAD_ZR, btnOr("Put away", VPAD_B));
 				// magnesis: wheel pushes / pulls
 				pushPullContext = ui.Has("Push") || ui.Has("Pull") || ui.Has("Far") || ui.Has("Near");
 				if (pushPullContext && wheel != 0)
@@ -1457,7 +1464,7 @@ namespace pce::Input
 				// shield up + attack key = perfect guard (parry)
 				// (not when the game offers an action on the attack button: Flurry Rush after a dodge, Sneakstrike, ...)
 				// (and not in the 3 s after a dodge: Flurry Rush needs the attack button)
-				if (s.parryWithAttack && down(Action::Target) && down(Action::Attack) && !cancel && !throwIt && !afterDodge &&
+				if (s.parryWithAttack && down(Action::Target) && down(Action::Attack) && !cancel && !throwIt && !heldItems && !afterDodge &&
 					!ui.HasButton(UI::Btn::Y))
 					remap(Action::Attack, VPAD_Y, VPAD_A, false);
 			}

@@ -59,6 +59,9 @@ namespace pce::UI
 
 		bool Has(std::string_view text) const;
 		bool HasButton(Btn b) const;
+		// Materials are held in the hands (taken with "Hold" in the inventory): the guides are "Drop", "Put away" and
+		// "Far" / "Near" (camera). A bomb or a carried object has "Throw" as well.
+		bool HeldItems() const;
 		Btn ButtonFor(std::string_view text) const;
 	};
 

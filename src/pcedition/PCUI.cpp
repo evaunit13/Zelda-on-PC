@@ -650,6 +650,8 @@ namespace pce::UI
 			return false;
 		}
 
+		bool sHeldItems = false; // State::HeldItems of the last state
+
 		// which PC glyph a prompt should show: menus are driven by the pointer, gameplay prompts follow the
 		// context controls of PCInput (scope, runes, bombs, climbing, swimming, cutscenes, magnesis)
 		uint16 PromptGlyph(uint32 pane, uint16 code, std::string screen, const std::string& label, const Settings& s)
@@ -683,7 +685,11 @@ namespace pce::UI
 				return g ? g : DefaultGlyphFor(s, code);
 			}
 			uint16 g = 0;
-			if (has("Place pin") || has("Throw"))
+			if (sHeldItems && label == "Drop")
+				g = lmb;
+			else if (sHeldItems && label == "Put away")
+				g = rmb;
+			else if (has("Place pin") || has("Throw"))
 				g = lmb;
 			else if (has("Quit") || has("Cancel") || has("Detonate"))
 				g = rmb;
@@ -1683,6 +1689,12 @@ namespace pce::UI
 		return false;
 	}
 
+	bool State::HeldItems() const
+	{
+		// ("Put away" is the same word as "Cancel" in some languages and then arrives as "Cancel": German "Abbrechen")
+		return !anyMenu && Has("Drop") && !Has("Throw") && (Has("Put away") || Has("Far") || Has("Near"));
+	}
+
 	Btn State::ButtonFor(std::string_view text) const
 	{
 		for (auto& a : actions)
@@ -1711,6 +1723,7 @@ namespace pce::UI
 			const auto t0 = std::chrono::steady_clock::now();
 			Compute(sState);
 			sStateFrame = frame;
+			sHeldItems = sState.HeldItems();
 			const uint64 us = (uint64)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
 			sComputeTotalUs += us;
 			sComputeCount++;
