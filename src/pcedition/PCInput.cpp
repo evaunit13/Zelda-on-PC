@@ -347,6 +347,7 @@ namespace pce::Input
 			uint64 escNetPrint = 0;
 			bool prevEscIsBack = false;
 			bool glideClose = false;           // the jump key is closing the paraglider (until it is released)
+			bool climbTake = false;            // the interact key was pressed for what the game offered while climbing (until it is released)
 			// toggle modes (Settings::toggleSprint / toggleShield): the action stays "held" after one press
 			bool sprintLatch = false, shieldLatch = false;
 			bool prevSprintKey = false, prevShieldKey = false;
@@ -1422,8 +1423,13 @@ namespace pce::Input
 				if (ui.Has("Let go"))
 				{
 					const uint32 letGo = btnOr("Let go", VPAD_B);
-					if (down(Action::Interact))
-						remap(Action::Interact, VPAD_A, letGo); // let go of a wall
+					// The interact key lets go of the wall, unless the game offers something on its own interact button
+					// (a fruit in reach of a climbed tree: "Take"). That is decided when the key goes down: the offer is
+					// gone as soon as the fruit is taken, and the same press must not let go then.
+					if (pressed(Action::Interact))
+						fs.climbTake = !ui.actionA.empty();
+					if (down(Action::Interact) && !fs.climbTake)
+						remap(Action::Interact, VPAD_A, letGo);
 					if (!ui.Has("Jump") && down(Action::Jump))
 						remap(Action::Jump, VPAD_X, letGo);
 				}
@@ -1434,6 +1440,8 @@ namespace pce::Input
 					fs.glideClose = true;
 				if (!down(Action::Jump))
 					fs.glideClose = false;
+				if (!down(Action::Interact))
+					fs.climbTake = false;
 				if (fs.glideClose)
 					remap(Action::Jump, VPAD_X, VPAD_B);
 				const bool cancel = ui.Has("Cancel");

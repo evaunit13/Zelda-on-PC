@@ -651,6 +651,7 @@ namespace pce::UI
 		}
 
 		bool sHeldItems = false; // State::HeldItems of the last state
+		bool sActionOffered = false; // the last state had an action on the interact button (State::actionA)
 
 		// which PC glyph a prompt should show: menus are driven by the pointer, gameplay prompts follow the
 		// context controls of PCInput (scope, runes, bombs, climbing, swimming, cutscenes, magnesis)
@@ -693,6 +694,8 @@ namespace pce::UI
 				g = lmb;
 			else if (has("Quit") || has("Cancel") || has("Detonate"))
 				g = rmb;
+			else if (has("Let go") && sActionOffered)
+				g = 0; // climbing with a fruit in reach: the interact key takes it, letting go is on its own button
 			else if (has("Let go") || has("Skip"))
 				g = act(pce::Action::Interact);
 			else if (has("Dash"))
@@ -1724,6 +1727,7 @@ namespace pce::UI
 			Compute(sState);
 			sStateFrame = frame;
 			sHeldItems = sState.HeldItems();
+			sActionOffered = !sState.actionA.empty();
 			const uint64 us = (uint64)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
 			sComputeTotalUs += us;
 			sComputeCount++;
