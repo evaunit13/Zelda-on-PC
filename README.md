@@ -100,9 +100,11 @@ glyphs are drawn for this project in the style of the game.
   - the **update 1.5.0** (required)
   - the DLC (optional)
 
-The base game can also be a disc image (`.wud`, `.wux`). Disc images are encrypted: the key file of the disc (same
-name as the image, extension `.key`, 16 bytes) has to be next to it, or its key in `data\keys.txt`; a `keys.txt` of a
-Cemu installation is read as well. Update and DLC are not part of a disc image: they come as folders or a `.wua`.
+**Experimental:** the base game can also be a disc image (`.wud`, `.wux`). This is new and has seen little testing;
+if it does not work for you, please open an issue, and use folders or a `.wua` in the meantime. Disc images are
+encrypted: the key file of the disc (same name as the image, extension `.key`, 16 bytes) has to be next to it, or its
+key in `data\keys.txt`; a `keys.txt` of a Cemu installation is read as well. Update and DLC are not part of a disc
+image: they come as folders or a `.wua`.
 
 ## Install
 
