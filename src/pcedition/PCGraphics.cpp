@@ -118,6 +118,49 @@ mtlr r0
 stwu r1, -0x190(r1)
 b 0x02BCB3A4
 
+; Magnesis with an object held: the rune's action (update 0x020D72D0, r3 = action) keeps the direction of the object
+; around Link; the mouse rotation is added to it before the update runs
+_pceMagnetEntry:
+mflr r0
+bl import.coreinit.PCE_MagnetTick
+mtlr r0
+stwu r1, -0x108(r1)
+b 0x020D72D4
+
+; ... and its camera (update 0x02BF0234) is turned by the same angle: r3 = pose of the camera (0 = none), r29 = camera
+; (replaces "or. r27, r3, r3"; the function has saved its return address and r27 by then)
+_pceMagnetCam:
+mflr r27
+mr r4, r29
+bl import.coreinit.PCE_MagnetCamTick
+mtlr r27
+or. r27, r3, r3
+blr
+
+; ... and the position of the object it frames is turned by what the object has not done yet: end of the camera's
+; "where is the object" (0x02BD8A30), r31 = camera (replaces the reload of r0 from 0x14(r1); r3 is kept)
+_pceMagnetTarget:
+mflr r12
+mr r4, r31
+bl import.coreinit.PCE_MagnetTarget
+mtlr r12
+lwz r0, 0x14(r1)
+blr
+
+; ... and the action's own check whether the object is held back (in 0x020D6A50) is corrected for the turn: the call
+; of 0x03C6FD44 (f1 = distance between the points at r3 and r4) is made from here, then f1 is looked at with Link's
+; position (0x38(r1), the frame is still the caller's). r31 is free at that point: the function reloads it before use.
+_pceMagnetDistance:
+mflr r31
+lis r12, 0x03C7
+addi r12, r12, -700
+mtctr r12
+bctrl
+addi r3, r1, 0x38
+bl import.coreinit.PCE_MagnetDistance
+mtlr r31
+blr
+
 ; manual yaw: f13 = rotation for this frame (scaled later by the frame time factor at this+0x120)
 _pceYaw:
 fmuls f13, f10, f6
@@ -159,10 +202,11 @@ fadds f1, f1, f0
 fadds f23, f23, f1
 blr
 
-; ---- scope / first person camera (0x02B9250C) and bow aim camera (0x02B94E30) ----
+; ---- the two aim cameras: 0x02B9250C is the zoomed one (scope, bow drawn: "Scope" below), 0x02B94E30 the one of the
+; runes that are aimed (Magnesis, Stasis, Cryonis: "Bow" below, named before a bow could be tested) ----
 _pceScopeEntry:
 mflr r0
-bl import.coreinit.PCE_AimTick
+bl import.coreinit.PCE_ScopeTick
 mtlr r0
 stwu r1, -0x1a8(r1)
 b 0x02B92510
@@ -221,6 +265,10 @@ blr
 0x02B9B8A0 = b _pceCamEntry
 0x02BEE0F8 = b _pceClimbCamEntry
 0x02BCB3A0 = b _pceTalkCamEntry
+0x020D72D0 = b _pceMagnetEntry
+0x02BF02A8 = bla _pceMagnetCam
+0x02BD8AB8 = bla _pceMagnetTarget
+0x020D6DAC = bla _pceMagnetDistance
 0x02B9C950 = bla _pceYaw
 0x02B9C120 = bla _pcePitchPrep
 0x02B9C188 = bla _pcePitch

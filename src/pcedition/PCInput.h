@@ -72,6 +72,9 @@ namespace pce
 			std::atomic<float> overrideMouseX{0}, overrideMouseY{0};
 			std::atomic<bool> overrideLmb{false}, overrideRmb{false};
 			std::atomic<sint32> injectWheel{0};
+			// Magnesis: how fast the held object follows the view (degrees per second, and metres per second along its
+			// circle, whichever is less)
+			std::atomic<float> magnetFollowDeg{360.0f}, magnetFollowMetres{40.0f};
 			std::atomic<uint64> overrideKeysAction{0}; // bit per Action, held as if pressed
 			std::atomic<bool> lastPointerMode{false}, lastGameMenu{false};
 			// motion tests: fixed tilt pose (degrees) instead of the mouse driven one

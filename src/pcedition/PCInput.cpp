@@ -394,7 +394,7 @@ namespace pce::Input
 			hCPU->instructionPointer = hCPU->spr.LR;
 		}
 
-		// aim cameras (scope / first person, bow): same pending values, own sign convention
+		// aim cameras (the zoomed one of the scope and the bow, and the one of the runes): same pending values, own sign convention
 		std::atomic<uint32> sAimTickFrame{0xF0000000};
 		constexpr double kAimYawSign = -1.0;
 		constexpr double kAimPitchSign = -1.0;
@@ -405,6 +405,16 @@ namespace pce::Input
 			HLE_CamTick(hCPU);
 		}
 
+		// The zoomed camera alone (0x02B9250C: the scope, and the bow while it is drawn). The other aim camera
+		// (0x02B94E30) is the one of the runes that are aimed: Magnesis, Stasis, Cryonis.
+		std::atomic<uint32> sScopeTickFrame{0xF0000000};
+
+		void HLE_ScopeTick(PPCInterpreter_t* hCPU)
+		{
+			sScopeTickFrame = sDebug.frameCounter.load();
+			HLE_AimTick(hCPU);
+		}
+
 		double TakePending(double& v, int& age)
 		{
 			std::lock_guard lock(sCamMutex);
@@ -412,6 +422,14 @@ namespace pce::Input
 			v = 0.0;
 			age = 0;
 			return r;
+		}
+
+		double Wrap180(double a)
+		{
+			a = fmod(a + 180.0, 360.0);
+			if (a < 0.0)
+				a += 360.0;
+			return a - 180.0;
 		}
 
 		// Other orbit cameras. Climbing (walls, ladders) and conversations have their own camera classes: the chase
@@ -449,6 +467,181 @@ namespace pce::Input
 			OrbitCamTick(hCPU, 0x48, 0x40);
 		}
 
+		// Magnesis with an object held. No camera reads the stick here: the rune's action (update 0x020D72D0) keeps
+		// where the object is held around Link: direction at +0xA8 (radians), height at +0xA4 and distance at +0xA0
+		// (metres). The stick turns the direction by 60 degrees per second at most, and that was all the mouse could
+		// do through stick emulation. The camera (class 0x101BAB4C, update 0x02BF0234) frames Link and the object: it
+		// asks where the object is (0x02BD8A30: three copies of the position at camera+0x40 / +0x4C / +0x58), follows
+		// its direction with a dead zone of 5 degrees (smoothed direction at camera+0x90, degrees) and eases its eye /
+		// look-at point (pose +0x550 / +0x55C) after that.
+		// With the mouse the view turns at once and the object swings after it:
+		//  - the camera rig (eye, look-at point, smoothed direction) is turned by the mouse rotation around Link
+		//    (pose +0x7D4) before the camera's own update, so the view follows the mouse 1:1;
+		//  - the action's direction follows the view at a limited speed (kMagnetFollow*). The object itself is always
+		//    one frame behind its direction, and the game takes an object that is far behind for one that is stuck:
+		//    it pulls it closer and finally lets go of it;
+		//  - the position the camera is given is turned by what the object still has to do to reach the view
+		//    (MagnetState::lead), so the camera's own smoothing sees nothing to correct and does not pull the view back;
+		//  - the game shortens the distance when the object is more than 1 m nearer than it is held at (something is in
+		//    its way). It measures that to a smoothed position of the object (time constant about 0.2 s), which cuts
+		//    the corner when the object is turned around Link faster than the stick can do it: the distance shrank
+		//    with every quick turn and the object was dropped in the end. While the mouse turns the object, the
+		//    measurement is not allowed to be shorter than the distance to where the object really is.
+		// Up / down moves the object by the same angle as seen from Link, at the same speed (the game limits the height).
+		std::atomic<uint32> sMagnetFrame{0xF0000000};
+		struct MagnetState // under sCamMutex
+		{
+			double rigYaw = 0.0;       // degrees the view was turned by the mouse and the camera rig not yet
+			double backlogYaw = 0.0;   // degrees the view is ahead of the action's direction (shortest way)
+			double backlogPitch = 0.0; // the same for up / down
+			double direction = 0.0;    // the action's direction (degrees) as it was left by the last update
+			double pending = 0.0;      // change of the view's direction the camera has not been told about yet
+			double lead = 0.0;         // degrees the view is ahead of the object, as the camera sees them
+			double objectYaw = 0.0;    // direction of the object from Link when the camera last asked
+			bool hasDirection = false, hasObject = false;
+			sint64 lastQpc = 0;
+			sint64 lastTurnQpc = 0;    // when the mouse last turned the action's direction
+			uint32 pose = 0;           // pose of the camera in the update that is running
+		} sMagnet;
+
+		// turns a point (x, y, z floats) around a vertical axis; angles grow from +z towards +x like the game's atan2(x, z)
+		void TurnAround(uint32 point, double cx, double cz, double degrees)
+		{
+			const double a = degrees * 3.14159265358979 / 180.0, c = cos(a), s = sin(a);
+			const double x = memory_readFloat(point) - cx, z = memory_readFloat(point + 8) - cz;
+			memory_writeFloat(point, (float)(cx + x * c + z * s));
+			memory_writeFloat(point + 8, (float)(cz + z * c - x * s));
+		}
+
+		// entry of the action's update, r3 = action
+		void HLE_MagnetTick(PPCInterpreter_t* hCPU)
+		{
+			constexpr double kDegToRad = 3.14159265358979 / 180.0;
+			const uint32 action = hCPU->gpr[3];
+			const uint32 frame = sDebug.frameCounter.load();
+			const bool resumed = frame - sMagnetFrame.exchange(frame) > 2;
+			sCamTickFrame = frame;
+			const double yaw = kGameYawSign * TakePending(sPendingYaw, sYawAge);
+			const double pitch = TakePending(sPendingPitch, sPitchAge);
+			if (memory_isAddressRangeAccessible(action, 0xB0))
+			{
+				std::lock_guard lock(sCamMutex);
+				const sint64 now = QpcNow();
+				if (resumed)
+				{
+					sMagnet = {};
+					sMagnet.lastQpc = now;
+				}
+				const double dt = std::clamp((double)(now - sMagnet.lastQpc) / QpcFreq(), 1.0 / 240.0, 1.0 / 20.0);
+				sMagnet.lastQpc = now;
+				const double distance = std::clamp((double)memory_readFloat(action + 0xA0), 1.0, 100.0);
+				// how far the direction may go in this update: an angle, and less for a far object (it moves faster)
+				const double followDeg = sDebug.magnetFollowDeg.load(), followMetres = sDebug.magnetFollowMetres.load();
+				const double maxStep = std::min(followDeg, followMetres / distance / kDegToRad) * dt;
+
+				// what the stick (or motion control) has turned in the last update belongs to the view as well
+				const double before = (double)memory_readFloat(action + 0xA8) / kDegToRad;
+				const double stick = sMagnet.hasDirection ? before - sMagnet.direction : 0.0;
+				sMagnet.backlogYaw = Wrap180(sMagnet.backlogYaw + yaw);
+				const double stepYaw = std::clamp(sMagnet.backlogYaw, -maxStep, maxStep);
+				sMagnet.backlogYaw -= stepYaw;
+				if (stepYaw != 0.0)
+				{
+					memory_writeFloat(action + 0xA8, (float)((before + stepYaw) * kDegToRad));
+					sMagnet.lastTurnQpc = now;
+				}
+				sMagnet.direction = (double)memory_readFloat(action + 0xA8) / kDegToRad;
+				sMagnet.hasDirection = true;
+				sMagnet.pending += yaw + stick;
+				sMagnet.rigYaw += yaw;
+
+				sMagnet.backlogPitch = std::clamp(sMagnet.backlogPitch + pitch, -60.0, 60.0);
+				const double stepPitch = std::clamp(sMagnet.backlogPitch, -maxStep, maxStep);
+				sMagnet.backlogPitch -= stepPitch;
+				if (stepPitch != 0.0)
+					memory_writeFloat(action + 0xA4, memory_readFloat(action + 0xA4) + (float)(distance * tan(stepPitch * kDegToRad)));
+			}
+			hCPU->instructionPointer = hCPU->spr.LR;
+		}
+
+		// start of the camera's update: r3 = pose of the camera (0 if it has none), r4 = camera
+		void HLE_MagnetCamTick(PPCInterpreter_t* hCPU)
+		{
+			const uint32 pose = hCPU->gpr[3], cam = hCPU->gpr[4];
+			const bool active = sDebug.frameCounter.load() - sMagnetFrame.load() <= 2 && pose != 0 && memory_isAddressRangeAccessible(pose + 0x550, 0x290) &&
+								memory_isAddressRangeAccessible(cam, 0x94);
+			double turn;
+			{
+				std::lock_guard lock(sCamMutex);
+				turn = sMagnet.rigYaw;
+				sMagnet.rigYaw = 0.0;
+				sMagnet.pose = active ? pose : 0;
+			}
+			if (active && turn != 0.0)
+			{
+				const double cx = memory_readFloat(pose + 0x7D4), cz = memory_readFloat(pose + 0x7DC);
+				TurnAround(pose + 0x550, cx, cz, turn);
+				TurnAround(pose + 0x55C, cx, cz, turn);
+				memory_writeFloat(cam + 0x90, (float)Wrap180(memory_readFloat(cam + 0x90) + turn));
+			}
+			hCPU->instructionPointer = hCPU->spr.LR;
+		}
+
+		// The action has measured how far the object is from Link (f1, horizontal, to the smoothed position of the object);
+		// r3 = Link's position as it was used for that. The object itself: the game's magnet state (0x10467BE0) keeps
+		// two positions at +0xB0, the current one is chosen by +0x11C.
+		void HLE_MagnetDistance(PPCInterpreter_t* hCPU)
+		{
+			const uint32 link = hCPU->gpr[3];
+			bool turning;
+			{
+				std::lock_guard lock(sCamMutex);
+				turning = sMagnet.lastTurnQpc != 0 && (double)(QpcNow() - sMagnet.lastTurnQpc) / QpcFreq() < 1.0;
+			}
+			const uint32 state = turning && sDebug.frameCounter.load() - sMagnetFrame.load() <= 2 ? memory_readU32(0x10467BE0) : 0;
+			if (state != 0 && memory_isAddressRangeAccessible(state, 0x120) && memory_isAddressRangeAccessible(link, 12))
+			{
+				const uint32 index = memory_readU32(state + 0x11C);
+				const uint32 object = state + 0xB0 + (index < 2 ? index * 0xC : 0);
+				const double dx = (double)memory_readFloat(object) - memory_readFloat(link), dz = (double)memory_readFloat(object + 8) - memory_readFloat(link + 8);
+				const double real = sqrt(dx * dx + dz * dz);
+				if (real > hCPU->fpr[1].fpr && real < 200.0)
+					hCPU->fpr[1].fpr = (double)(float)real;
+			}
+			hCPU->instructionPointer = hCPU->spr.LR;
+		}
+
+		// the camera has just been given the position of the object: r4 = camera
+		void HLE_MagnetTarget(PPCInterpreter_t* hCPU)
+		{
+			const uint32 cam = hCPU->gpr[4];
+			double lead = 0.0, cx = 0.0, cz = 0.0;
+			{
+				std::lock_guard lock(sCamMutex);
+				const uint32 pose = sMagnet.pose;
+				if (pose != 0 && memory_isAddressRangeAccessible(cam, 0x64))
+				{
+					cx = memory_readFloat(pose + 0x7D4);
+					cz = memory_readFloat(pose + 0x7DC);
+					const double objectYaw = atan2((double)memory_readFloat(cam + 0x58) - cx, (double)memory_readFloat(cam + 0x60) - cz) * 180.0 / 3.14159265358979;
+					// what the view has turned since the last time, less what the object has done of it
+					sMagnet.lead = Wrap180(sMagnet.lead + sMagnet.pending - (sMagnet.hasObject ? Wrap180(objectYaw - sMagnet.objectYaw) : 0.0));
+					sMagnet.pending = 0.0;
+					sMagnet.objectYaw = objectYaw;
+					sMagnet.hasObject = true;
+					if (std::fabs(sMagnet.lead) < 0.001)
+						sMagnet.lead = 0.0;
+					lead = sMagnet.lead;
+				}
+			}
+			if (lead != 0.0)
+			{
+				for (const uint32 copy : {cam + 0x40, cam + 0x4C, cam + 0x58})
+					TurnAround(copy, cx, cz, lead);
+			}
+			hCPU->instructionPointer = hCPU->spr.LR;
+		}
+
 		void HLE_AimYaw(PPCInterpreter_t* hCPU)
 		{
 			hCPU->fpr[1].fpr = (double)(float)(kAimYawSign * TakePending(sPendingYaw, sYawAge));
@@ -459,14 +652,6 @@ namespace pce::Input
 		// continuous movement. We keep an absolute target yaw and return target - base every frame.
 		double sAimTargetYaw = 0.0;
 		uint32 sAimYawFrame = 0xF0000000;
-
-		double Wrap180(double a)
-		{
-			a = fmod(a + 180.0, 360.0);
-			if (a < 0.0)
-				a += 360.0;
-			return a - 180.0;
-		}
 
 		void HLE_AimYawAbs(PPCInterpreter_t* hCPU)
 		{
@@ -679,9 +864,14 @@ namespace pce::Input
 		osLib_addFunction("coreinit", "PCE_GlideTick", HLE_GlideTick);
 		osLib_addFunction("coreinit", "PCE_ClimbCamTick", HLE_ClimbCamTick);
 		osLib_addFunction("coreinit", "PCE_TalkCamTick", HLE_TalkCamTick);
+		osLib_addFunction("coreinit", "PCE_MagnetTick", HLE_MagnetTick);
+		osLib_addFunction("coreinit", "PCE_MagnetCamTick", HLE_MagnetCamTick);
+		osLib_addFunction("coreinit", "PCE_MagnetTarget", HLE_MagnetTarget);
+		osLib_addFunction("coreinit", "PCE_MagnetDistance", HLE_MagnetDistance);
 		osLib_addFunction("coreinit", "PCE_CamYaw", HLE_CamYaw);
 		osLib_addFunction("coreinit", "PCE_CamPitch", HLE_CamPitch);
 		osLib_addFunction("coreinit", "PCE_AimTick", HLE_AimTick);
+		osLib_addFunction("coreinit", "PCE_ScopeTick", HLE_ScopeTick);
 		osLib_addFunction("coreinit", "PCE_AimYaw", HLE_AimYaw);
 		osLib_addFunction("coreinit", "PCE_AimYawAbs", HLE_AimYawAbs);
 		osLib_addFunction("coreinit", "PCE_AimPitch", HLE_AimPitch);
@@ -794,8 +984,9 @@ namespace pce::Input
 	std::string CameraAges()
 	{
 		const uint32 f = sDebug.frameCounter.load();
-		return fmt::format("cam {} aim {} glide {} climbcam {} talkcam {}", f - sCamTickFrame.load(), f - sAimTickFrame.load(),
-						   f - sGlideTickFrame.load(), f - sClimbCamFrame.load(), f - sTalkCamFrame.load());
+		return fmt::format("cam {} aim {} scope {} glide {} climbcam {} talkcam {} magnet {}", f - sCamTickFrame.load(), f - sAimTickFrame.load(),
+						   f - sScopeTickFrame.load(), f - sGlideTickFrame.load(), f - sClimbCamFrame.load(), f - sTalkCamFrame.load(),
+						   f - sMagnetFrame.load());
 	}
 
 	void NoteVPADCaller(uint32 lr, uint32 length)
@@ -1413,8 +1604,10 @@ namespace pce::Input
 
 		// ---- right stick (camera) ----
 		float rx = 0.0f, ry = 0.0f;
-		const bool aimCamera = (sDebug.frameCounter.load() - sAimTickFrame.load()) <= 2;
-		const bool aiming = aimCamera || down(Action::Bow) || down(Action::Scope);
+		// "Aiming Sensitivity" is for the bow and the scope (the zoomed camera). Aiming a rune (Magnesis, Stasis,
+		// Cryonis) is not zoomed and keeps the normal sensitivity.
+		const bool scopeCamera = (sDebug.frameCounter.load() - sScopeTickFrame.load()) <= 2;
+		const bool aiming = scopeCamera || down(Action::Bow) || down(Action::Scope);
 		if (tilt)
 		{
 			// mouse drives the GamePad tilt

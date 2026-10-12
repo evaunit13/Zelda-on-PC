@@ -350,6 +350,15 @@ namespace pce::DevBridge
 						Menus::RequestLoad();
 					return "ok";
 				}
+				if (c == "magfollow")
+				{
+					// magfollow [degrees per second] [metres per second]: speed of the object held with Magnesis
+					if (a.size() > 1)
+						dbg.magnetFollowDeg = f(1);
+					if (a.size() > 2)
+						dbg.magnetFollowMetres = f(2);
+					return fmt::format("{} {}", dbg.magnetFollowDeg.load(), dbg.magnetFollowMetres.load());
+				}
 				if (c == "vwheel")
 				{
 					dbg.injectWheel += (sint32)f(1);
