@@ -61,11 +61,11 @@ Output: `bin\ZeldaOnPC_release.exe`. It runs from `bin` once `bin\settings.ini` 
 (`[Game]` / `Path=`), or when an existing Cemu installation already knows it.
 
 ```bat
-powershell -ExecutionPolicy Bypass -File tools\package.ps1 -Version 1.1.4
+powershell -ExecutionPolicy Bypass -File tools\package.ps1 -Version 1.2.0
 ```
 
-stages the files in `build\stage` and builds `installer\output\ZeldaOnPC-Setup-1.1.4.exe`. Silent installation for
-tests: `ZeldaOnPC-Setup-1.1.4.exe /VERYSILENT /GAMEDIR="D:\Games\BotW" /DIR="D:\Test"`.
+stages the files in `build\stage` and builds `installer\output\ZeldaOnPC-Setup-1.2.0.exe`. Silent installation for
+tests: `ZeldaOnPC-Setup-1.2.0.exe /VERYSILENT /GAMEDIR="D:\Games\BotW" /DIR="D:\Test"`.
 
 Regenerating the art (Python 3 with Pillow and NumPy):
 
@@ -109,6 +109,11 @@ Useful commands (the full list is the `if (c == "...")` chain in `PCDevBridge.cp
 | `uistate`, `uitexts`, `uitree <screen>`, `pointer`, `cursor` | Interface model |
 | `buttons <mask>`, `stick ...`, `vkeys ...`, `vmouse x y [l] [r]`, `vwheel n` | Input injection |
 | `picmap <x> <y> <client width> <client height>` | Where a point of the window lies in the picture (it keeps its shape, so a window of another shape has bars) |
+| `rawkey <virtual key> <1 down / 0 up>`, `rawwheel <delta>` | Keyboard and wheel as if they came from the devices (the same code path as real input) |
+| `pcmouse <x> <y> [down]`, `pcmouse -1` | The mouse as the PC settings and popups see it (window pixels) |
+| `panechain <screen> <text pane>` | Visibility and alpha of a text pane and its parents |
+| `nfctouch <file>`, `nfpstate` | Put an amiibo file on the emulated reader; the state of the game's amiibo detection |
+| `barriers <0/1>` | Vulkan accurate barriers on / off (for measurements) |
 | `read32` / `readf` / `readhex`, `write32` / `writef` | Game memory |
 | `logbp <addr> <text with {r3} ...>`, `membp <addr>`, `bpdel <addr>` | Logging breakpoints (written to `log.txt`) |
 | `scan ...`, `snap` / `sdiff` | Memory search for values that changed |
