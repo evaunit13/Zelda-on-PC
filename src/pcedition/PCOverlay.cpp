@@ -9,6 +9,10 @@
 #include "pcedition/PCPrompts.h"
 
 #include <windows.h>
+#include <commdlg.h>
+#include <shellapi.h>
+#include <mutex>
+#pragma comment(lib, "comdlg32.lib")
 #include <fstream>
 #include <thread>
 
@@ -17,6 +21,8 @@
 #include "config/ActiveSettings.h"
 #include "Cafe/CafeSystem.h"
 #include "gui/interface/WindowSystem.h"
+#include "Cafe/OS/libs/nfc/nfc.h"
+#include "Cafe/OS/libs/nn_nfp/nn_nfp.h"
 
 void LatteFrameGen_GetStats(float& baseFps, float& shownFps, bool& generating); // LatteRenderTarget.cpp
 
@@ -25,6 +31,11 @@ namespace pce::Overlay
 	namespace
 	{
 		std::atomic<bool> sOpen{false};
+		std::atomic<bool> sOpenRequest{false}; // RequestOpen (game thread) -> opened when the next frame is drawn
+		std::atomic<float> sDebugMouseX{-1.0f}, sDebugMouseY{0.0f};
+		std::atomic<bool> sDebugMouseDown{false};
+		bool sEmbedShown = false;              // the settings were drawn in the System page last frame
+		bool sPagesEmbedded = false;           // sPages were built for the System page (no Resume / Save / Load)
 		float sAnim = 0.0f;
 		double sLastTime = 0.0;
 
@@ -44,8 +55,9 @@ namespace pce::Overlay
 		// --- style (BotW inspired palette) ---
 		const ImU32 kText = IM_COL32(237, 232, 208, 255);
 		const ImU32 kTextDim = IM_COL32(160, 155, 140, 255);
-		const ImU32 kSheikah = IM_COL32(110, 225, 255, 255);
-		const ImU32 kSheikahDim = IM_COL32(110, 225, 255, 70);
+		// accent: the yellow of the game's own menus (place names in the Adventure Log, ...)
+		const ImU32 kAccent = IM_COL32(248, 200, 0, 255);
+		const ImU32 kAccentDim = IM_COL32(248, 200, 0, 70);
 		const ImU32 kWarn = IM_COL32(255, 120, 90, 255);
 		const ImU32 kPanel = IM_COL32(8, 10, 12, 215);
 		const ImU32 kBorder = IM_COL32(232, 225, 200, 150);
@@ -86,7 +98,9 @@ namespace pce::Overlay
 		Settings sEdit; // working copy
 		int sPage = 0;
 		int sSel = 0;
-		float sScroll = 0.0f;
+		float sScroll = 0.0f;        // shown scroll offset of the list (eases towards the target)
+		float sScrollTarget = 0.0f;
+		bool sEnsureVisible = false; // the selection was moved with the keyboard: scroll it into view
 		bool sRebinding = false;
 		int sRebindSlot = 0;
 		Action sRebindAction = Action::Count;
@@ -118,7 +132,80 @@ namespace pce::Overlay
 			Graphics::ApplyLive();
 		}
 
-		std::vector<Page> BuildPages()
+		// ---- amiibo: files of the player's amiibo (dumps of their figures) in <data>/amiibo; when the game looks for an
+		// amiibo (the amiibo rune), one of them is chosen in a popup and put on Cemu's emulated NFC reader ----
+		bool sAmiiboOpen = false;      // the popup is shown
+		bool sAmiiboDismissed = false; // closed by the player while the game still looks: not again until it stops looking
+		int sAmiiboSel = 0;
+		std::vector<fs::path> sAmiiboFiles;
+		std::string sAmiiboError;
+		std::mutex sAmiiboMutex;
+		std::atomic<bool> sAmiiboDialog{false}; // the file dialog is open (on its own thread)
+		fs::path sAmiiboAdded;                  // what the dialog added (under sAmiiboMutex)
+		std::string sAmiiboAddError;
+
+		fs::path AmiiboDir()
+		{
+			return GetDataDir() / "amiibo";
+		}
+
+		void RefreshAmiiboFiles()
+		{
+			sAmiiboFiles.clear();
+			std::error_code ec;
+			fs::create_directories(AmiiboDir(), ec);
+			for (const auto& e : fs::directory_iterator(AmiiboDir(), ec))
+			{
+				if (!e.is_regular_file(ec))
+					continue;
+				std::string ext = _pathToUtf8(e.path().extension());
+				std::transform(ext.begin(), ext.end(), ext.begin(), [](unsigned char c) { return (char)std::tolower(c); });
+				if (ext == ".bin" || ext == ".nfc" || ext == ".dat")
+					sAmiiboFiles.push_back(e.path());
+			}
+			std::sort(sAmiiboFiles.begin(), sAmiiboFiles.end());
+		}
+
+		// Windows' file dialog on a thread of its own (the game keeps running); the chosen file is copied into the folder
+		void AddAmiiboFile()
+		{
+			if (sAmiiboDialog.exchange(true))
+				return;
+			HWND owner = (HWND)WindowSystem::GetWindowInfo().window_main.surface;
+			std::thread([owner]() {
+				wchar_t path[2048] = {};
+				OPENFILENAMEW ofn{};
+				ofn.lStructSize = sizeof(ofn);
+				ofn.hwndOwner = owner;
+				ofn.lpstrFilter = L"amiibo files (*.bin, *.nfc, *.dat)\0*.bin;*.nfc;*.dat\0All files\0*.*\0";
+				ofn.lpstrFile = path;
+				ofn.nMaxFile = (DWORD)std::size(path);
+				ofn.lpstrTitle = L"Add an amiibo file";
+				ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER;
+				if (GetOpenFileNameW(&ofn))
+				{
+					std::error_code ec;
+					const fs::path src(path);
+					fs::create_directories(AmiiboDir(), ec);
+					const fs::path dst = AmiiboDir() / src.filename();
+					if (!fs::equivalent(src, dst, ec))
+						fs::copy_file(src, dst, fs::copy_options::overwrite_existing, ec);
+					std::lock_guard lock(sAmiiboMutex);
+					sAmiiboAdded = dst;
+					sAmiiboAddError = ec ? "The file could not be copied." : "";
+				}
+				sAmiiboDialog = false;
+			}).detach();
+		}
+
+		void OpenAmiiboFolder()
+		{
+			std::error_code ec;
+			fs::create_directories(AmiiboDir(), ec);
+			ShellExecuteW(nullptr, L"open", AmiiboDir().wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+		}
+
+		std::vector<Page> BuildPages(bool embedded = false)
 		{
 			std::vector<Page> pages;
 			auto slider = [](const char* label, float* v, float mn, float mx, float step, const char* fmt, const char* help) {
@@ -159,6 +246,9 @@ namespace pce::Overlay
 				p.items.push_back(slider("Keyboard Camera Speed", &sEdit.keyCameraSpeed, 0.1f, 1.0f, 0.05f, "%.2f", "Speed of the optional keyboard camera keys."));
 				p.items.push_back(slider("Walk Speed", &sEdit.walkSpeed, 0.2f, 0.8f, 0.05f, "%.2f", "Movement speed while the Walk key is held."));
 				p.items.push_back(toggle("Parry with Attack", &sEdit.parryWithAttack, "While the shield is raised (Lock On held), the Attack key performs a perfect guard."));
+				p.items.push_back(toggle("Remote Bombs: Keep the Bow", &sEdit.bombKeepsBow,
+										 "On: while a remote bomb is out, Draw Bow still draws the bow and the Use Rune key detonates the bomb. "
+										 "Off: Draw Bow detonates it."));
 				p.items.push_back(toggle("Toggle Sprint", &sEdit.toggleSprint, "On: press the Sprint key once to keep sprinting while you move. Press it again or stand still to stop. Off: hold the key."));
 				p.items.push_back(toggle("Toggle Lock On / Shield", &sEdit.toggleShield, "On: press the Lock On key once to keep the shield raised and the target locked, press it again to lower it. Off: hold the key. Crouching is always a toggle in the game."));
 				p.items.push_back(slider("Weapon Wheel Delay", &sEdit.wheelReleaseDelayMs, 150.0f, 1200.0f, 25.0f, "%.0f ms", "How long the weapon selector stays open after the last mouse wheel step."));
@@ -235,15 +325,19 @@ namespace pce::Overlay
 			}
 			{
 				Page p{"Game"};
-				p.items.push_back(button("Resume", "Return to the game.", []() { SetOpen(false); }));
-				p.items.push_back(button("Save Game", "Opens the game's save prompt.", []() {
-					SetOpen(false);
-					Menus::RequestSave();
-				}));
-				p.items.push_back(button("Load Game", "Opens the list of saves.", []() {
-					SetOpen(false);
-					Menus::RequestLoad();
-				}));
+				if (!embedded)
+				{
+					// (the System page of the pause menu has them itself)
+					p.items.push_back(button("Resume", "Return to the game.", []() { SetOpen(false); }));
+					p.items.push_back(button("Save Game", "Opens the game's save prompt.", []() {
+						SetOpen(false);
+						Menus::RequestSave();
+					}));
+					p.items.push_back(button("Load Game", "Opens the list of saves.", []() {
+						SetOpen(false);
+						Menus::RequestLoad();
+					}));
+				}
 				if (sLanguages.size() > 1)
 				{
 					std::vector<std::string> names;
@@ -257,6 +351,16 @@ namespace pce::Overlay
 				p.items.push_back(choice("Temperature Unit", &sEdit.temperatureUnit, {"Automatic", "Celsius", "Fahrenheit"},
 										 "Unit of the temperature on the map. Automatic: as the game decides (Fahrenheit for US English, Celsius "
 										 "otherwise)."));
+				p.items.push_back(header("amiibo"));
+				p.items.push_back(button("Add amiibo File...", "Copies the .bin file of an amiibo (a dump of your figure) into the game's amiibo folder. "
+															   "When the amiibo rune looks for an amiibo, you choose one of them. The rune is turned on in the "
+															   "game's own Options (System page).",
+										 []() {
+											 AddAmiiboFile();
+											 Toast("Choose the file in the window that opened");
+										 }));
+				p.items.push_back(button("Open amiibo Folder", "The folder with your amiibo files. Files put there by hand are offered as well.",
+										 []() { OpenAmiiboFolder(); }));
 				p.items.push_back(button("Quit to Desktop", "Unsaved progress since the last save will be lost.", []() { sConfirmQuit = true; }));
 				pages.push_back(std::move(p));
 			}
@@ -340,7 +444,7 @@ namespace pce::Overlay
 			{
 				// (the item is gone after this: nothing may use it any more)
 				const int selected = sSel;
-				sPages = BuildPages();
+				sPages = BuildPages(sPagesEmbedded);
 				sSel = std::clamp(selected, 0, std::max(0, (int)sPages[sPage].items.size() - 1));
 			}
 		}
@@ -435,7 +539,7 @@ namespace pce::Overlay
 	{
 		sPage = std::clamp(page, 0, std::max(0, (int)sPages.size() - 1));
 		sSel = 0;
-		sScroll = 0;
+		sScroll = sScrollTarget = 0;
 	}
 
 	void SetOpen(bool open)
@@ -454,13 +558,26 @@ namespace pce::Overlay
 			for (int i = 0; i < (int)sLanguages.size(); i++)
 				if (sEdit.language == sLanguages[i].code)
 					sLanguageIndex = i;
-			sPages = BuildPages();
+			sPages = BuildPages(false);
+			sPagesEmbedded = false;
 			sRebinding = false;
 			sConfirmQuit = false;
 			FixSelection(1);
 		}
 		sOpen = open;
 		Input::SetOverlayOpen(open);
+	}
+
+	void RequestOpen()
+	{
+		sOpenRequest = true;
+	}
+
+	void DebugMouse(float x, float y, bool down)
+	{
+		sDebugMouseX = x;
+		sDebugMouseY = y;
+		sDebugMouseDown = down;
 	}
 
 	bool IsOpen()
@@ -608,6 +725,148 @@ namespace pce::Overlay
 			dl->AddText(font, fs, ImVec2(center.x - ts.x * 0.5f, center.y - ts.y * 0.52f), ink, label.c_str());
 		}
 
+		// a mouse in the style of the prompt keys: body, one part lit (0 none, 1 left, 2 right, 3 wheel)
+		void DrawMouseBody(ImDrawList* dl, const ImVec2& center, float h, int lit, int a)
+		{
+			const ImU32 cap = IM_COL32(255, 255, 255, a);
+			const float w = h * 0.7f, r = w * 0.5f, t = std::max(1.5f, h * 0.085f);
+			const ImVec2 p0(center.x - w * 0.5f, center.y - h * 0.5f), p1(center.x + w * 0.5f, center.y + h * 0.5f);
+			const float split = p0.y + h * 0.42f;
+			dl->AddRectFilled(p0, p1, IM_COL32(0, 0, 0, a / 3), r);
+			if (lit == 1)
+				dl->AddRectFilled(p0, ImVec2(center.x, split), cap, r, ImDrawFlags_RoundCornersTopLeft);
+			if (lit == 2)
+				dl->AddRectFilled(ImVec2(center.x, p0.y), ImVec2(p1.x, split), cap, r, ImDrawFlags_RoundCornersTopRight);
+			dl->AddRect(p0, p1, cap, r, 0, t);
+			dl->AddLine(ImVec2(p0.x, split), ImVec2(p1.x, split), cap, t);
+			dl->AddLine(ImVec2(center.x, p0.y), ImVec2(center.x, split), cap, t);
+			if (lit == 3)
+				dl->AddRectFilled(ImVec2(center.x - w * 0.13f, p0.y + h * 0.12f), ImVec2(center.x + w * 0.13f, split + h * 0.08f), cap, w * 0.13f);
+		}
+
+		// width a key cap / mouse of height h takes (for placing several in a row)
+		float GlyphWidth(uint16 glyph, float h)
+		{
+			if (glyph >= 0xE100)
+			{
+				const Key k = (Key)(glyph - 0xE100);
+				if (IsMouseKey(k) && k != Key::WheelUp && k != Key::WheelDown)
+					return h * 0.7f;
+				const std::string label = KeyCapLabel(k);
+				ImFont* font = sFonts.key ? sFonts.key : ImGui::GetFont();
+				const float fsz = h * (label.size() == 1 ? 0.80f : 0.48f);
+				return std::max(h, font->CalcTextSizeA(fsz, FLT_MAX, 0.0f, label.c_str()).x + h * 0.45f);
+			}
+			return h * 1.6f;
+		}
+
+		// a PC glyph of PCPrompts: one key, or the composites (keys W A S D, a mouse moved, the wheel, 1 - 4, ...)
+		void DrawGlyph(ImDrawList* dl, const ImVec2& c, float h, uint16 glyph, float alpha)
+		{
+			using namespace Prompts;
+			const int a = (int)(255 * std::clamp(alpha, 0.0f, 1.0f));
+			auto key = [&](ImVec2 p, float kh, Key k) { DrawPromptKey(dl, p, kh, KeyGlyph(k) ? KeyGlyph(k) : (uint16)(0xE100 + (uint16)k), alpha); };
+			auto arrowText = [&](ImVec2 p, float sz, const char* t) {
+				ImFont* f = sFonts.item;
+				const ImVec2 ts = f->CalcTextSizeA(sz, FLT_MAX, 0, t);
+				dl->AddText(f, sz, ImVec2(p.x - ts.x * 0.5f, p.y - ts.y * 0.5f), IM_COL32(255, 255, 255, a), t);
+			};
+			if (glyph >= 0xE100)
+			{
+				DrawPromptKey(dl, c, h, glyph, alpha);
+				return;
+			}
+			const float s = h * 0.55f, g = s * 1.08f;
+			switch (glyph)
+			{
+			case kGlyphWASD:
+				key(ImVec2(c.x, c.y - g * 0.5f), s, KeyChar('W'));
+				key(ImVec2(c.x - g, c.y + g * 0.5f), s, KeyChar('A'));
+				key(ImVec2(c.x, c.y + g * 0.5f), s, KeyChar('S'));
+				key(ImVec2(c.x + g, c.y + g * 0.5f), s, KeyChar('D'));
+				break;
+			case kGlyphAD:
+				key(ImVec2(c.x - g * 0.55f, c.y), s * 1.2f, KeyChar('A'));
+				key(ImVec2(c.x + g * 0.55f, c.y), s * 1.2f, KeyChar('D'));
+				break;
+			case kGlyphWS:
+				key(ImVec2(c.x, c.y - g * 0.5f), s, KeyChar('W'));
+				key(ImVec2(c.x, c.y + g * 0.5f), s, KeyChar('S'));
+				break;
+			case kGlyphArrowKeys:
+				key(ImVec2(c.x, c.y - g * 0.5f), s, Key::Up);
+				key(ImVec2(c.x - g, c.y + g * 0.5f), s, Key::Left);
+				key(ImVec2(c.x, c.y + g * 0.5f), s, Key::Down);
+				key(ImVec2(c.x + g, c.y + g * 0.5f), s, Key::Right);
+				break;
+			case kGlyphOneToFour:
+				for (int i = 0; i < 4; i++)
+					key(ImVec2(c.x + (i - 1.5f) * g, c.y), s, KeyChar((char)('1' + i)));
+				break;
+			case kGlyphWheelUpDown:
+				DrawMouseBody(dl, c, h, 3, a);
+				arrowText(ImVec2(c.x + h * 0.62f, c.y), h * 0.45f, "\xE2\x86\x91\xE2\x86\x93");
+				break;
+			default:
+			{
+				// the mouse moved: all ways, sideways, up / down, one way
+				DrawMouseBody(dl, c, h, 0, a);
+				const char* t = glyph == kGlyphMouseX ? "\xE2\x86\x90\xE2\x86\x92" : glyph == kGlyphMouseY ? "\xE2\x86\x91\xE2\x86\x93"
+							  : glyph == kGlyphMouseLeft ? "\xE2\x86\x90" : glyph == kGlyphMouseRight ? "\xE2\x86\x92"
+							  : glyph == kGlyphMouseUp ? "\xE2\x86\x91" : glyph == kGlyphMouseDown ? "\xE2\x86\x93" : "\xE2\x86\x94";
+				arrowText(ImVec2(c.x + h * 0.62f, c.y), h * 0.45f, t);
+				break;
+			}
+			}
+		}
+
+		// "Ability Controls": the PC keys where the game shows pictures of the GamePad (hidden by PCUI)
+		void DrawTipKeys()
+		{
+			const auto tips = UI::GetTipKeys();
+			if (tips.empty() || !sFonts.item)
+				return;
+			ImGuiIO& io = ImGui::GetIO();
+			ImDrawList* dl = ImGui::GetForegroundDrawList();
+			float X = 0.0f, Y = 0.0f, W = io.DisplaySize.x, H = io.DisplaySize.y;
+			int px, py, pw, ph, ww, wh;
+			if (Graphics::GetPictureArea(px, py, pw, ph, ww, wh))
+			{
+				const float kx = io.DisplaySize.x / (float)ww, ky = io.DisplaySize.y / (float)wh;
+				X = px * kx;
+				Y = py * ky;
+				W = pw * kx;
+				H = ph * ky;
+			}
+			const Settings s = GetSettings();
+			for (const auto& t : tips)
+			{
+				if (t.codes.empty())
+					continue;
+				const ImVec2 c(X + t.rect.cx() * W, Y + t.rect.cy() * H);
+				const float h = std::min((t.rect.y1 - t.rect.y0) * H, (t.rect.x1 - t.rect.x0) * W * 0.6f) * 0.34f;
+				std::vector<uint16> glyphs;
+				for (uint16 code : t.codes)
+					glyphs.push_back(code >= 0xE0F0 && code < 0xE100 ? code : Prompts::DefaultGlyphFor(s, code));
+				float total = 0.0f;
+				for (uint16 g : glyphs)
+					total += GlyphWidth(g, h);
+				total += h * 0.6f * (glyphs.size() - 1);
+				float x = c.x - total * 0.5f;
+				for (size_t i = 0; i < glyphs.size(); i++)
+				{
+					const float w = GlyphWidth(glyphs[i], h);
+					DrawGlyph(dl, ImVec2(x + w * 0.5f, c.y), h, glyphs[i], 1.0f);
+					x += w;
+					if (i + 1 < glyphs.size())
+					{
+						TextAligned(dl, sFonts.item, h * 0.5f, ImVec2(x + h * 0.3f, c.y - h * 0.27f), kText, "+", 0.5f);
+						x += h * 0.6f;
+					}
+				}
+			}
+		}
+
 		void DrawFpsCounter()
 		{
 			static uint64 rev = ~0ull;
@@ -669,28 +928,676 @@ namespace pce::Overlay
 		}
 	}
 
+	namespace
+	{
+		bool IsSettingsKey(Key k)
+		{
+			const Settings cur = GetSettings();
+			return k == cur.bind(Action::Settings).keys[0] || k == cur.bind(Action::Settings).keys[1];
+		}
+
+		void SelectPage(int page)
+		{
+			sPage = (page + (int)sPages.size()) % (int)sPages.size();
+			sSel = 0;
+			sScroll = sScrollTarget = 0;
+			FixSelection(1);
+		}
+
+		// a key for the list (both menus); returns true for "back" (closes the PC menu, leaves the settings in the
+		// System page)
+		bool HandleKey(Key k)
+		{
+			auto& items = sPages[sPage].items;
+			if (sConfirmQuit)
+			{
+				if (k == Key::Enter || k == KeyChar('Y'))
+					PostMessageW((HWND)WindowSystem::GetWindowInfo().window_main.surface, WM_CLOSE, 0, 0);
+				sConfirmQuit = false;
+				return false;
+			}
+			if (sRebinding)
+			{
+				if (k == Key::Escape)
+					sRebinding = false;
+				else if (!(k == Key::MouseLeft && Now() - sRebindStart < 0.25)) // (the click which started the rebinding)
+					FinishRebind(k);
+				return false;
+			}
+			if (k == Key::Escape || k == Key::Backspace || (IsSettingsKey(k) && k != Key::MouseLeft))
+				return true;
+			if (k == Key::Up || k == KeyChar('W'))
+			{
+				sSel--;
+				sEnsureVisible = true;
+				if (sSel < 0) sSel = (int)items.size() - 1;
+				FixSelection(-1);
+			}
+			else if (k == Key::Down || k == KeyChar('S'))
+			{
+				sSel++;
+				sEnsureVisible = true;
+				if (sSel >= (int)items.size()) sSel = 0;
+				FixSelection(1);
+			}
+			else if (k == Key::Left || k == KeyChar('A'))
+			{
+				if (!items.empty() && items[sSel].type == ItemType::Binding)
+					sRebindSlot = 0;
+				else if (!items.empty())
+					Adjust(items[sSel], -1);
+			}
+			else if (k == Key::Right || k == KeyChar('D'))
+			{
+				if (!items.empty() && items[sSel].type == ItemType::Binding)
+					sRebindSlot = 1;
+				else if (!items.empty())
+					Adjust(items[sSel], 1);
+			}
+			else if (k == Key::Enter || k == Key::Space)
+			{
+				if (!items.empty())
+					Activate(items[sSel]);
+			}
+			else if (k == Key::Delete)
+			{
+				if (!items.empty() && items[sSel].type == ItemType::Binding)
+				{
+					sEdit.bind(items[sSel].action).keys[sRebindSlot] = Key::None;
+					Commit();
+				}
+			}
+			else if (k == KeyChar('Q') || k == Key::PageUp)
+				SelectPage(sPage - 1);
+			else if (k == KeyChar('E') || k == Key::PageDown || k == Key::Tab)
+				SelectPage(sPage + 1);
+			return false;
+		}
+
+		// the tab row; returns its width
+		float DrawTabs(ImDrawList* dl, float right, float y, float fs, float a, bool interactive, bool alignCenter, float centerX)
+		{
+			ImGuiIO& io = ImGui::GetIO();
+			auto alpha = [&](ImU32 c, float m = 1.0f) { return (c & 0x00FFFFFF) | ((uint32)(((c >> 24) & 0xFF) * a * m) << 24); };
+			const float gap = fs * 1.4f;
+			float total = 0.0f;
+			for (auto& p : sPages)
+				total += sFonts.item->CalcTextSizeA(fs, FLT_MAX, 0, p.name.c_str()).x;
+			total += gap * (float)(sPages.size() - 1);
+			float tx = alignCenter ? centerX - total * 0.5f : right - total;
+			for (int i = 0; i < (int)sPages.size(); i++)
+			{
+				const std::string& n = sPages[i].name;
+				const ImVec2 ts = sFonts.item->CalcTextSizeA(fs, FLT_MAX, 0, n.c_str());
+				const ImVec2 tp(tx, y);
+				const bool active = i == sPage;
+				const ImRect r(ImVec2(tp.x - fs * 0.4f, tp.y - fs * 0.3f), ImVec2(tp.x + ts.x + fs * 0.4f, tp.y + ts.y + fs * 0.4f));
+				const bool hover = interactive && !sRebinding && r.Contains(io.MousePos);
+				dl->AddText(sFonts.item, fs, tp, alpha(active ? kAccent : (hover ? kText : kTextDim)), n.c_str());
+				if (active)
+					dl->AddLine(ImVec2(tp.x, tp.y + ts.y + fs * 0.15f), ImVec2(tp.x + ts.x, tp.y + ts.y + fs * 0.15f), alpha(kAccent), 2.0f);
+				if (hover && io.MouseDown[0] && !sMouseWasDown)
+					SelectPage(i);
+				tx += ts.x + gap;
+			}
+			return total;
+		}
+
+		// the rows of the current page in `list` (scrolled); `interactive`: the mouse may use them, `focused`: the
+		// selection is shown
+		void DrawRows(ImDrawList* dl, const ImRect& list, float fs, float a, bool interactive, bool focused, int wheel, double now)
+		{
+			ImGuiIO& io = ImGui::GetIO();
+			auto alpha = [&](ImU32 c, float m = 1.0f) { return (c & 0x00FFFFFF) | ((uint32)(((c >> 24) & 0xFF) * a * m) << 24); };
+			auto& items = sPages[sPage].items;
+			const float rowH = fs * 1.75f;
+			const float listTop = list.Min.y, listBottom = list.Max.y, listH = listBottom - listTop;
+			const float contentH = rowH * items.size();
+			// Scrolling eases towards its target. The wheel moves the target; the keyboard scrolls the selection into view
+			// once when it moves it (not every frame: that pulled the list back against the wheel).
+			const float maxScroll = std::max(0.0f, contentH - listH);
+			if (sEnsureVisible && focused)
+			{
+				const float selY = sSel * rowH;
+				if (selY < sScrollTarget)
+					sScrollTarget = selY;
+				if (selY + rowH > sScrollTarget + listH)
+					sScrollTarget = selY + rowH - listH;
+			}
+			sEnsureVisible = false;
+			if (wheel != 0 && !sRebinding)
+				sScrollTarget -= wheel * rowH * 1.5f;
+			sScrollTarget = std::clamp(sScrollTarget, 0.0f, maxScroll);
+			sScroll += (sScrollTarget - sScroll) * (1.0f - expf(-std::min(io.DeltaTime, 0.1f) * 18.0f));
+			if (std::fabs(sScrollTarget - sScroll) < 0.5f)
+				sScroll = sScrollTarget;
+			sScroll = std::clamp(sScroll, 0.0f, maxScroll);
+
+			const float x0 = list.Min.x, x1 = list.Max.x, w = x1 - x0;
+			const float colLabel = x0 + fs * 0.8f;
+			const float colValue = x0 + w * 0.58f;
+			const float colKey1 = x0 + w * 0.58f, colKey2 = x0 + w * 0.79f;
+			dl->PushClipRect(ImVec2(x0 - fs, listTop), ImVec2(x1 + fs, listBottom), true);
+			const bool mouseClicked = interactive && io.MouseDown[0] && !sMouseWasDown;
+			for (int i = 0; i < (int)items.size(); i++)
+			{
+				Item& it = items[i];
+				const float y = listTop + i * rowH - sScroll;
+				if (y + rowH < listTop || y > listBottom)
+					continue;
+				const ImVec2 r0(x0, y), r1(x1, y + rowH * 0.92f);
+				const float ty = y + (rowH * 0.92f - fs) * 0.5f;
+				if (it.type == ItemType::Header)
+				{
+					dl->AddText(sFonts.small, fs * 0.72f, ImVec2(colLabel, ty + fs * 0.2f), alpha(kAccent, 0.9f), it.label.c_str());
+					dl->AddLine(ImVec2(colLabel, y + rowH * 0.85f), ImVec2(r1.x - fs, y + rowH * 0.85f), alpha(kAccentDim), 1.0f);
+					continue;
+				}
+				const bool hover = interactive && !sRebinding && !sConfirmQuit && ImRect(r0, r1).Contains(io.MousePos) && io.MousePos.y >= listTop &&
+								   io.MousePos.y <= listBottom;
+				if (hover && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0 || mouseClicked))
+					sSel = i;
+				const bool sel = i == sSel && (focused || hover);
+				if (sel)
+				{
+					dl->AddRectFilled(r0, r1, alpha(IM_COL32(248, 200, 0, 22)));
+					dl->AddRect(r0, r1, alpha(kAccent, 0.85f), 2.0f, 0, 1.5f);
+					// glowing corner ticks
+					const float tk = fs * 0.5f;
+					dl->AddLine(r0, ImVec2(r0.x + tk, r0.y), alpha(kAccent), 3.0f);
+					dl->AddLine(r0, ImVec2(r0.x, r0.y + tk), alpha(kAccent), 3.0f);
+					dl->AddLine(r1, ImVec2(r1.x - tk, r1.y), alpha(kAccent), 3.0f);
+					dl->AddLine(r1, ImVec2(r1.x, r1.y - tk), alpha(kAccent), 3.0f);
+				}
+				dl->AddText(sFonts.item, fs, ImVec2(colLabel, ty), alpha(sel ? kText : kTextDim, sel ? 1.0f : 0.95f), it.label.c_str());
+				switch (it.type)
+				{
+				case ItemType::Slider:
+				{
+					const float bx0 = colValue, bx1 = r1.x - fs * 5.0f;
+					const float by = y + rowH * 0.46f;
+					const float t = (*it.fval - it.fmin) / (it.fmax - it.fmin);
+					dl->AddLine(ImVec2(bx0, by), ImVec2(bx1, by), alpha(kBorder, 0.5f), 2.0f);
+					dl->AddLine(ImVec2(bx0, by), ImVec2(bx0 + (bx1 - bx0) * t, by), alpha(kAccent), 3.0f);
+					dl->AddCircleFilled(ImVec2(bx0 + (bx1 - bx0) * t, by), fs * 0.28f, alpha(sel ? kAccent : kText));
+					char buf[64];
+					snprintf(buf, sizeof(buf), it.fmt, *it.fval);
+					TextAligned(dl, sFonts.item, fs, ImVec2(r1.x - fs * 0.6f, ty), alpha(kText), buf, 1.0f);
+					if (hover && io.MouseDown[0] && io.MousePos.x >= bx0 - fs && io.MousePos.x <= bx1 + fs)
+					{
+						const float nt = std::clamp((io.MousePos.x - bx0) / (bx1 - bx0), 0.0f, 1.0f);
+						float nv = it.fmin + nt * (it.fmax - it.fmin);
+						nv = roundf(nv / it.fstep) * it.fstep;
+						if (nv != *it.fval)
+						{
+							*it.fval = nv;
+							Commit();
+						}
+					}
+					break;
+				}
+				case ItemType::Toggle:
+				{
+					const char* v = *it.bval ? "ON" : "OFF";
+					TextAligned(dl, sFonts.item, fs, ImVec2(r1.x - fs * 0.6f, ty), alpha(*it.bval ? kAccent : kText), v, 1.0f);
+					if (sel)
+						TextAligned(dl, sFonts.item, fs, ImVec2(r1.x - fs * 3.6f, ty), alpha(kTextDim), "\xE2\x97\x80", 1.0f);
+					if (hover && mouseClicked)
+						Adjust(it, 1);
+					break;
+				}
+				case ItemType::Choice:
+				{
+					const std::string& v = it.options[std::clamp(*it.ival, 0, (int)it.options.size() - 1)];
+					TextAligned(dl, sFonts.item, fs, ImVec2(r1.x - fs * 1.6f, ty), alpha(kText), v, 1.0f);
+					if (sel)
+					{
+						const ImVec2 vs = sFonts.item->CalcTextSizeA(fs, FLT_MAX, 0, v.c_str());
+						TextAligned(dl, sFonts.item, fs * 0.8f, ImVec2(r1.x - fs * 2.4f - vs.x, ty + fs * 0.1f), alpha(kAccent), "\xE2\x97\x80", 1.0f);
+						TextAligned(dl, sFonts.item, fs * 0.8f, ImVec2(r1.x - fs * 0.6f, ty + fs * 0.1f), alpha(kAccent), "\xE2\x96\xB6", 1.0f);
+					}
+					if (hover && mouseClicked)
+						Adjust(it, io.MousePos.x < r1.x - fs * 6.0f ? -1 : 1);
+					break;
+				}
+				case ItemType::Binding:
+				{
+					const auto& b = sEdit.bind(it.action).keys;
+					for (int slot = 0; slot < 2; slot++)
+					{
+						const float cx = slot == 0 ? colKey1 + (colKey2 - colKey1) * 0.5f : colKey2 + (r1.x - colKey2) * 0.5f;
+						const bool editing = sRebinding && sRebindAction == it.action && sRebindSlot == slot;
+						const bool conflict = KeyHasConflict(it.action, b[slot]);
+						const ImU32 col = editing ? kAccent : (conflict ? kWarn : (sel ? kText : kTextDim));
+						if (editing)
+						{
+							const float pulse = 0.55f + 0.45f * sinf((float)now * 6.0f);
+							TextAligned(dl, sFonts.small, fs * 0.72f, ImVec2(cx, ty + fs * 0.12f), alpha(kAccent, pulse), "Press a key...", 0.5f);
+						}
+						else
+							KeyCap(dl, sFonts.small, fs * 0.72f, ImVec2(cx, y + rowH * 0.46f), b[slot], alpha(col), a);
+						if (sel && focused && sRebindSlot == slot && !editing)
+						{
+							const ImVec2 c(cx, y + rowH * 0.46f);
+							dl->AddRect(ImVec2(c.x - (colKey2 - colKey1) * 0.45f, c.y - rowH * 0.38f), ImVec2(c.x + (colKey2 - colKey1) * 0.45f, c.y + rowH * 0.38f),
+										alpha(kAccent, 0.6f), 3.0f);
+						}
+						const ImRect hr(ImVec2(cx - (colKey2 - colKey1) * 0.45f, y), ImVec2(cx + (colKey2 - colKey1) * 0.45f, y + rowH));
+						if (hover && hr.Contains(io.MousePos) && mouseClicked)
+						{
+							sRebindSlot = slot;
+							Activate(it);
+						}
+					}
+					break;
+				}
+				case ItemType::Button:
+					if (hover && mouseClicked)
+						Activate(it);
+					break;
+				default:
+					break;
+				}
+			}
+			dl->PopClipRect();
+			if (sPages[sPage].name == "Controls")
+			{
+				TextAligned(dl, sFonts.small, fs * 0.72f, ImVec2(colKey1 + (colKey2 - colKey1) * 0.5f, listTop - fs * 1.1f), alpha(kTextDim), "Primary", 0.5f);
+				TextAligned(dl, sFonts.small, fs * 0.72f, ImVec2(colKey2 + (x1 - colKey2) * 0.5f, listTop - fs * 1.1f), alpha(kTextDim), "Secondary", 0.5f);
+			}
+		}
+
+		std::string HelpText()
+		{
+			auto& items = sPages[sPage].items;
+			if (items.empty() || sSel >= (int)items.size())
+				return "";
+			std::string help = items[sSel].help;
+			if (items[sSel].type == ItemType::Binding)
+			{
+				for (Key kk : sEdit.bind(items[sSel].action).keys)
+					if (KeyHasConflict(items[sSel].action, kk))
+						help = fmt::format("Conflict: {} is also assigned to \"{}\".", KeyDisplayName(kk), ConflictName(items[sSel].action, kk));
+			}
+			return help;
+		}
+
+		// the key hints at the bottom, right aligned at `right`
+		void DrawGuide(ImDrawList* dl, float right, float gy, float fs, float a, const std::vector<std::pair<const char*, const char*>>& guide)
+		{
+			auto alpha = [&](ImU32 c, float m = 1.0f) { return (c & 0x00FFFFFF) | ((uint32)(((c >> 24) & 0xFF) * a * m) << 24); };
+			float gx = right;
+			for (int i = (int)guide.size() - 1; i >= 0; i--)
+			{
+				const ImVec2 ts = sFonts.small->CalcTextSizeA(fs * 0.8f, FLT_MAX, 0, guide[i].second);
+				gx -= ts.x;
+				dl->AddText(sFonts.small, fs * 0.8f, ImVec2(gx, gy), alpha(kText), guide[i].second);
+				const ImVec2 ks = sFonts.small->CalcTextSizeA(fs * 0.72f, FLT_MAX, 0, guide[i].first);
+				const float kw = ks.x + fs * 0.8f;
+				gx -= kw + fs * 0.35f;
+				const ImVec2 k0(gx, gy - fs * 0.08f), k1(gx + kw, gy + fs * 0.92f);
+				dl->AddRectFilled(k0, k1, alpha(IM_COL32(237, 232, 208, 235)), fs * 0.2f);
+				dl->AddText(sFonts.small, fs * 0.72f, ImVec2(gx + fs * 0.4f, gy + fs * 0.05f), alpha(IM_COL32(20, 20, 20, 255)), guide[i].first);
+				gx -= fs * 1.1f;
+			}
+		}
+
+		std::vector<std::pair<const char*, const char*>> ListGuide()
+		{
+			auto& items = sPages[sPage].items;
+			const bool bindingRow = !items.empty() && sSel < (int)items.size() && items[sSel].type == ItemType::Binding;
+			if (sRebinding)
+				return {{"Esc", "Cancel"}};
+			std::vector<std::pair<const char*, const char*>> guide = {
+				{"Enter", bindingRow ? "Change Key" : "Select"}, {"\xE2\x97\x80 \xE2\x96\xB6", bindingRow ? "Column" : "Change"}, {"Q / E", "Page"}, {"Esc", "Back"}};
+			if (bindingRow)
+				guide.insert(guide.begin() + 1, {"Del", "Clear"});
+			return guide;
+		}
+
+		void DrawToast(ImDrawList* dl, float cx, float y, float fs, double now)
+		{
+			if (sToast.empty() || now - sToastTime >= 3.0)
+				return;
+			const float ta = (float)std::min(1.0, (3.0 - (now - sToastTime)) * 2.0);
+			const ImVec2 ts = sFonts.small->CalcTextSizeA(fs * 0.85f, FLT_MAX, 0, sToast.c_str());
+			dl->AddRectFilled(ImVec2(cx - ts.x * 0.5f - fs, y - fs * 0.5f), ImVec2(cx + ts.x * 0.5f + fs, y + ts.y + fs * 0.4f),
+							  (IM_COL32(0, 0, 0, 200) & 0x00FFFFFF) | ((uint32)(200 * ta) << 24));
+			dl->AddText(sFonts.small, fs * 0.85f, ImVec2(cx - ts.x * 0.5f, y - fs * 0.05f), (kText & 0x00FFFFFF) | ((uint32)(255 * ta) << 24),
+						sToast.c_str());
+		}
+
+		void DrawQuitConfirmation(ImDrawList* dl, float W, float H, float fs)
+		{
+			if (!sConfirmQuit)
+				return;
+			dl->AddRectFilled(ImVec2(0, 0), ImVec2(W, H), IM_COL32(0, 0, 0, 120));
+			const ImVec2 c(W * 0.5f, H * 0.5f);
+			const ImVec2 b0(c.x - fs * 12, c.y - fs * 3), b1(c.x + fs * 12, c.y + fs * 3);
+			dl->AddRectFilled(b0, b1, IM_COL32(8, 10, 12, 240));
+			dl->AddRect(b0, b1, kBorder, 0, 0, 1.5f);
+			TextAligned(dl, sFonts.item, fs, ImVec2(c.x, c.y - fs * 1.6f), kText, "Quit to desktop?", 0.5f);
+			TextAligned(dl, sFonts.small, fs * 0.8f, ImVec2(c.x, c.y - fs * 0.2f), kTextDim, "Progress since your last save will be lost.", 0.5f);
+			TextAligned(dl, sFonts.small, fs * 0.8f, ImVec2(c.x, c.y + fs * 1.4f), kAccent, "Enter: Quit      Esc: Cancel", 0.5f);
+		}
+
+		// help text in at most two lines of `width`
+		void DrawHelp(ImDrawList* dl, float x, float y, float width, float fs, float a, const std::string& help)
+		{
+			auto alpha = [&](ImU32 c, float m = 1.0f) { return (c & 0x00FFFFFF) | ((uint32)(((c >> 24) & 0xFF) * a * m) << 24); };
+			dl->AddText(sFonts.small, fs * 0.8f, ImVec2(x, y), alpha(kText, 0.9f), help.c_str(), nullptr, width);
+		}
+
+		// ---- the PC settings in the System page of the game's pause menu, in place of its picture of the GamePad ----
+		void EnterEmbedded()
+		{
+			sEdit = GetSettings();
+			sFpsIndex = 0;
+			for (int i = 0; i < (int)std::size(kFpsValues); i++)
+				if (sEdit.fpsLimit >= kFpsValues[i])
+					sFpsIndex = i;
+			sLanguages = GetGameLanguages();
+			sLanguageIndex = 0;
+			for (int i = 0; i < (int)sLanguages.size(); i++)
+				if (sEdit.language == sLanguages[i].code)
+					sLanguageIndex = i;
+			sPages = BuildPages(true);
+			sPagesEmbedded = true;
+			sPage = std::clamp(sPage, 0, (int)sPages.size() - 1);
+			sSel = 0;
+			sScroll = sScrollTarget = 0;
+			sRebinding = false;
+			sConfirmQuit = false;
+			FixSelection(1);
+			Input::PopOverlayWheel();
+		}
+
+		void LeaveEmbedded()
+		{
+			sRebinding = false;
+			sConfirmQuit = false;
+			Input::SetEmbeddedFocus(false);
+			Input::SetPanelHover(false);
+		}
+
+		void RenderEmbedded(const Input::SystemPanel& panel, double now)
+		{
+			ImGuiIO& io = ImGui::GetIO();
+			ImDrawList* dl = ImGui::GetForegroundDrawList();
+			// the panel is a place in the game's picture, which has bars in a window of another shape
+			float X = 0.0f, Y = 0.0f, W = io.DisplaySize.x, H = io.DisplaySize.y;
+			int px, py, pw, ph, ww, wh;
+			if (Graphics::GetPictureArea(px, py, pw, ph, ww, wh))
+			{
+				const float kx = io.DisplaySize.x / (float)ww, ky = io.DisplaySize.y / (float)wh;
+				X = px * kx;
+				Y = py * ky;
+				W = pw * kx;
+				H = ph * ky;
+			}
+			// (the picture of the GamePad has its title at the top of this area and leaves the bottom free)
+			const ImRect area(ImVec2(X + panel.x0 * W, Y + (panel.y0 + 0.115f) * H), ImVec2(X + panel.x1 * W, Y + (panel.y1 + 0.06f) * H));
+			const float fs = std::min((float)sFonts.height, area.GetHeight() / 16.0f);
+			const bool focused = Input::EmbeddedFocus();
+			const bool hover = area.Contains(io.MousePos);
+			Input::SetPanelHover(hover);
+			const bool clicked = io.MouseDown[0] && !sMouseWasDown;
+			if (clicked && hover && !focused)
+				Input::SetEmbeddedFocus(true);
+			else if (clicked && !hover && focused && !sRebinding && !sConfirmQuit)
+				Input::SetEmbeddedFocus(false);
+
+			// keys: the settings have them while focused; otherwise only the way in (Right arrow, from the menu's list)
+			std::optional<Key> k;
+			while ((k = Input::PopKeyPress()))
+			{
+				if (Input::EmbeddedFocus())
+				{
+					if (HandleKey(*k))
+					{
+						Input::SetEmbeddedFocus(false);
+						break;
+					}
+				}
+				else if (*k == Key::Right)
+				{
+					Input::SetEmbeddedFocus(true);
+					break;
+				}
+			}
+			const int wheel = Input::PopOverlayWheel();
+
+			// tabs, centred where the picture's title was
+			const float tabY = area.Min.y;
+			DrawTabs(dl, area.Max.x, tabY, fs, 1.0f, true, true, area.GetCenter().x);
+			const float headerBottom = tabY + fs * 1.9f;
+			dl->AddLine(ImVec2(area.Min.x + fs, headerBottom), ImVec2(area.Max.x - fs, headerBottom), (kBorder & 0x00FFFFFF) | (90u << 24), 1.0f);
+			const bool isControls = sPages[sPage].name == "Controls";
+			const float listTop = headerBottom + fs * (isControls ? 1.7f : 0.6f);
+			const float helpH = fs * 2.2f, guideH = fs * 1.5f;
+			const ImRect list(ImVec2(area.Min.x + fs * 0.4f, listTop), ImVec2(area.Max.x - fs * 0.4f, area.Max.y - helpH - guideH - fs * 0.6f));
+			DrawRows(dl, list, fs, 1.0f, !sConfirmQuit, Input::EmbeddedFocus(), (hover || Input::EmbeddedFocus()) ? wheel : 0, now);
+			// help of the selected (or pointed at) row, and the keys
+			const float helpY = list.Max.y + fs * 0.5f;
+			dl->AddLine(ImVec2(area.Min.x + fs, helpY - fs * 0.2f), ImVec2(area.Max.x - fs, helpY - fs * 0.2f), (kBorder & 0x00FFFFFF) | (60u << 24), 1.0f);
+			if (Input::EmbeddedFocus() || hover)
+				DrawHelp(dl, area.Min.x + fs * 1.2f, helpY + fs * 0.2f, area.GetWidth() - fs * 2.4f, fs, 1.0f, HelpText());
+			if (Graphics::RestartPending())
+				TextAligned(dl, sFonts.small, fs * 0.72f, ImVec2(area.Min.x + fs * 1.2f, area.Max.y - guideH + fs * 0.1f), (kAccent & 0x00FFFFFF) | (230u << 24),
+							"Some changes apply after restarting", 0.0f);
+			if (Input::EmbeddedFocus())
+				DrawGuide(dl, area.Max.x - fs * 0.6f, area.Max.y - guideH, fs, 1.0f, ListGuide());
+			else
+				DrawGuide(dl, area.Max.x - fs * 0.6f, area.Max.y - guideH, fs, 1.0f, {{"\xE2\x96\xB6", "PC Settings"}});
+			DrawToast(dl, area.GetCenter().x, area.Min.y - fs * 1.4f, fs, now);
+			DrawQuitConfirmation(dl, io.DisplaySize.x, io.DisplaySize.y, (float)sFonts.height);
+		}
+
+		void CloseAmiibo(bool dismissed)
+		{
+			sAmiiboOpen = false;
+			sAmiiboDismissed = dismissed;
+			Input::SetPopupOpen(false);
+		}
+
+		void TouchAmiibo(int index)
+		{
+			if (index < 0 || index >= (int)sAmiiboFiles.size())
+				return;
+			uint32 err = NFC_TOUCH_TAG_ERROR_NONE;
+			if (nfc::TouchTagFromFile(sAmiiboFiles[index], &err))
+			{
+				cemuLog_log(LogType::Force, "PCE amiibo: {} put on the reader", _pathToUtf8(sAmiiboFiles[index].filename()));
+				CloseAmiibo(false);
+			}
+			else
+				sAmiiboError = err == NFC_TOUCH_TAG_ERROR_NO_ACCESS ? "This file cannot be opened." : "This file is not an amiibo.";
+		}
+
+		// returns true while the popup is shown (it has the input then)
+		bool RenderAmiibo(double now)
+		{
+			const bool waiting = nnNfp_isWaitingForTag();
+			if (!waiting)
+			{
+				if (sAmiiboOpen)
+					CloseAmiibo(false);
+				sAmiiboDismissed = false;
+				return false;
+			}
+			if (!sAmiiboOpen && !sAmiiboDismissed && !sOpen.load() && sFonts.item)
+			{
+				sAmiiboOpen = true;
+				RefreshAmiiboFiles();
+				sAmiiboSel = 0;
+				sAmiiboError.clear();
+				Input::SetPopupOpen(true);
+			}
+			if (!sAmiiboOpen)
+				return false;
+			{
+				std::lock_guard lock(sAmiiboMutex);
+				if (!sAmiiboAdded.empty())
+				{
+					RefreshAmiiboFiles();
+					for (int i = 0; i < (int)sAmiiboFiles.size(); i++)
+						if (sAmiiboFiles[i].filename() == sAmiiboAdded.filename())
+							sAmiiboSel = i;
+					sAmiiboError = sAmiiboAddError;
+					sAmiiboAdded.clear();
+				}
+			}
+			ImGuiIO& io = ImGui::GetIO();
+			ImDrawList* dl = ImGui::GetForegroundDrawList();
+			const float W = io.DisplaySize.x, H = io.DisplaySize.y, fs = (float)sFonts.height;
+			const int count = (int)sAmiiboFiles.size();
+			const bool dialog = sAmiiboDialog.load();
+			// actions of the bottom row
+			enum { kAdd = -2, kFolder = -3, kCancel = -4 };
+			std::optional<Key> k;
+			while ((k = Input::PopKeyPress()))
+			{
+				if (dialog)
+					continue;
+				if (*k == Key::Escape || *k == Key::Backspace)
+				{
+					CloseAmiibo(true);
+					return false;
+				}
+				if ((*k == Key::Up || *k == KeyChar('W')) && count)
+					sAmiiboSel = (sAmiiboSel + count - 1) % count;
+				else if ((*k == Key::Down || *k == KeyChar('S')) && count)
+					sAmiiboSel = (sAmiiboSel + 1) % count;
+				else if (*k == Key::Enter || *k == Key::Space)
+				{
+					if (count)
+						TouchAmiibo(sAmiiboSel);
+					else
+						AddAmiiboFile();
+				}
+				if (!sAmiiboOpen)
+					return false;
+			}
+			Input::PopOverlayWheel();
+
+			const float rowH = fs * 1.6f;
+			const int shown = std::clamp(count, 1, 8);
+			const float bw = std::max(fs * 24.0f, W * 0.34f), bh = fs * 6.4f + rowH * shown;
+			// (below the game's own "Touch an amiibo" window)
+			const ImVec2 b0((W - bw) * 0.5f, std::min(H * 0.6f, H - bh - fs)), b1(b0.x + bw, b0.y + bh);
+			dl->AddRectFilled(b0, b1, IM_COL32(8, 10, 12, 235));
+			dl->AddRect(b0, b1, kBorder, 0, 0, 1.5f);
+			dl->AddRect(ImVec2(b0.x + 5, b0.y + 5), ImVec2(b1.x - 5, b1.y - 5), (kBorder & 0x00FFFFFF) | (80u << 24), 0, 0, 1.0f);
+			TextAligned(dl, sFonts.title, fs * 1.2f, ImVec2(b0.x + fs * 1.2f, b0.y + fs * 0.7f), kAccent, "amiibo");
+			TextAligned(dl, sFonts.small, fs * 0.72f, ImVec2(b1.x - fs * 1.0f, b0.y + fs * 1.0f), kTextDim, "Enter: Scan    Esc: Close", 1.0f);
+			TextAligned(dl, sFonts.small, fs * 0.8f, ImVec2(b0.x + fs * 1.2f, b0.y + fs * 2.3f), kTextDim,
+						dialog ? "Choose the file in the window that opened." : (count ? "Choose an amiibo to scan." : "No amiibo files yet: add the .bin file of one."));
+			const bool clicked = io.MouseDown[0] && !sMouseWasDown && !dialog;
+			float y = b0.y + fs * 3.4f;
+			for (int i = 0; i < count && i < 8; i++)
+			{
+				const ImRect r(ImVec2(b0.x + fs * 0.8f, y), ImVec2(b1.x - fs * 0.8f, y + rowH * 0.9f));
+				const bool hover = r.Contains(io.MousePos) && !dialog;
+				if (hover && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0 || clicked))
+					sAmiiboSel = i;
+				if (i == sAmiiboSel)
+				{
+					dl->AddRectFilled(r.Min, r.Max, IM_COL32(248, 200, 0, 22));
+					dl->AddRect(r.Min, r.Max, (kAccent & 0x00FFFFFF) | (215u << 24), 2.0f, 0, 1.5f);
+				}
+				TextAligned(dl, sFonts.item, fs, ImVec2(r.Min.x + fs * 0.6f, y + (rowH * 0.9f - fs) * 0.5f), i == sAmiiboSel ? kText : kTextDim,
+							_pathToUtf8(sAmiiboFiles[i].stem()));
+				if (hover && clicked)
+				{
+					TouchAmiibo(i);
+					if (!sAmiiboOpen)
+						return false;
+				}
+				y += rowH;
+			}
+			if (!sAmiiboError.empty())
+				TextAligned(dl, sFonts.small, fs * 0.8f, ImVec2(b0.x + fs * 1.2f, b1.y - fs * 2.9f), kWarn, sAmiiboError);
+			// buttons
+			struct Btn { const char* label; int id; };
+			const Btn btns[] = {{"Add amiibo File...", kAdd}, {"Open Folder", kFolder}, {"Cancel", kCancel}};
+			float bx = b0.x + fs * 1.0f;
+			const float by = b1.y - fs * 1.8f;
+			for (const Btn& btn : btns)
+			{
+				const ImVec2 ts = sFonts.small->CalcTextSizeA(fs * 0.85f, FLT_MAX, 0, btn.label);
+				const ImRect r(ImVec2(bx, by - fs * 0.2f), ImVec2(bx + ts.x + fs * 1.2f, by + ts.y + fs * 0.25f));
+				const bool hover = r.Contains(io.MousePos) && !dialog;
+				dl->AddRectFilled(r.Min, r.Max, hover ? IM_COL32(248, 200, 0, 40) : IM_COL32(255, 255, 255, 14), fs * 0.15f);
+				dl->AddRect(r.Min, r.Max, hover ? kAccent : (kBorder & 0x00FFFFFF) | (110u << 24), fs * 0.15f, 0, 1.0f);
+				dl->AddText(sFonts.small, fs * 0.85f, ImVec2(bx + fs * 0.6f, by), hover ? kText : kTextDim, btn.label);
+				if (hover && clicked)
+				{
+					if (btn.id == kAdd)
+						AddAmiiboFile();
+					else if (btn.id == kFolder)
+						OpenAmiiboFolder();
+					else
+					{
+						CloseAmiibo(true);
+						sMouseWasDown = io.MouseDown[0];
+						return false;
+					}
+				}
+				bx = r.Max.x + fs * 0.6f;
+			}
+			sMouseWasDown = io.MouseDown[0];
+			return true;
+		}
+	}
+
 	void Render()
 	{
 		DrawHudPrompts();
+		DrawTipKeys();
 		DrawFpsCounter();
 		const double now = Now();
 		const float dt = sLastTime > 0 ? (float)std::min(0.1, now - sLastTime) : 0.016f;
 		sLastTime = now;
-
-		// global hotkey (works while playing): open/close the menu
+		if (sOpenRequest.exchange(false))
+			SetOpen(true);
+		if (RenderAmiibo(now))
+			return;
+		if (sDebugMouseX.load() >= 0.0f)
 		{
-			Settings cur = GetSettings();
+			ImGuiIO& dio = ImGui::GetIO();
+			dio.MousePos = ImVec2(sDebugMouseX.load(), sDebugMouseY.load());
+			dio.MouseDown[0] = sDebugMouseDown.load();
+		}
+
+		// the System page of the pause menu: the PC settings in place of its picture of the GamePad
+		const Input::SystemPanel panel = Input::GetSystemPanel();
+		const bool embedded = !sOpen.load() && panel.shown && sFonts.item;
+		if (embedded != sEmbedShown)
+		{
+			if (embedded)
+				EnterEmbedded();
+			else
+				LeaveEmbedded();
+			sEmbedShown = embedded;
+		}
+		if (embedded)
+		{
+			RenderEmbedded(panel, now);
+			sMouseWasDown = ImGui::GetIO().MouseDown[0];
+			return;
+		}
+
+		// global hotkey (works while playing): the pause menu on its System page (PC settings), or the PC menu
+		if (!sOpen.load())
+		{
 			// handled through key presses so that rebinding mode can capture keys
-			if (!sOpen.load())
+			std::optional<Key> k;
+			while ((k = Input::PopKeyPress()))
 			{
-				std::optional<Key> k;
-				while ((k = Input::PopKeyPress()))
+				if (IsSettingsKey(*k) && !Input::GameMenuOpen())
 				{
-					if ((*k == cur.bind(Action::Settings).keys[0] || *k == cur.bind(Action::Settings).keys[1]) && !Input::GameMenuOpen())
-					{
-						SetOpen(true);
-						break;
-					}
+					Input::RequestSystemMenu();
+					break;
 				}
 			}
 		}
@@ -712,89 +1619,14 @@ namespace pce::Overlay
 		// ---------- input ----------
 		if (sOpen.load())
 		{
-			auto& items = sPages[sPage].items;
 			std::optional<Key> k;
 			while ((k = Input::PopKeyPress()))
 			{
-				if (sConfirmQuit)
-				{
-					if (*k == Key::Enter || *k == KeyChar('Y'))
-						PostMessageW((HWND)WindowSystem::GetWindowInfo().window_main.surface, WM_CLOSE, 0, 0);
-					sConfirmQuit = false;
-					continue;
-				}
-				if (sRebinding)
-				{
-					if (*k == Key::Escape)
-					{
-						sRebinding = false;
-						continue;
-					}
-					if (*k == Key::MouseLeft && now - sRebindStart < 0.25)
-						continue; // the click which started the rebinding
-					FinishRebind(*k);
-					continue;
-				}
-				Settings cur = GetSettings();
-				const bool isSettingsKey = *k == cur.bind(Action::Settings).keys[0] || *k == cur.bind(Action::Settings).keys[1];
-				if (*k == Key::Escape || *k == Key::Backspace || (isSettingsKey && *k != Key::MouseLeft))
+				if (HandleKey(*k))
 				{
 					SetOpen(false);
 					break;
 				}
-				if (*k == Key::Up || *k == KeyChar('W'))
-				{
-					sSel--;
-					if (sSel < 0) sSel = (int)items.size() - 1;
-					FixSelection(-1);
-				}
-				else if (*k == Key::Down || *k == KeyChar('S'))
-				{
-					sSel++;
-					if (sSel >= (int)items.size()) sSel = 0;
-					FixSelection(1);
-				}
-				else if (*k == Key::Left || *k == KeyChar('A'))
-				{
-					if (!items.empty() && items[sSel].type == ItemType::Binding)
-						sRebindSlot = 0;
-					else if (!items.empty())
-						Adjust(items[sSel], -1);
-				}
-				else if (*k == Key::Right || *k == KeyChar('D'))
-				{
-					if (!items.empty() && items[sSel].type == ItemType::Binding)
-						sRebindSlot = 1;
-					else if (!items.empty())
-						Adjust(items[sSel], 1);
-				}
-				else if (*k == Key::Enter || *k == Key::Space)
-				{
-					if (!items.empty()) Activate(items[sSel]);
-				}
-				else if (*k == Key::Delete)
-				{
-					if (!items.empty() && items[sSel].type == ItemType::Binding)
-					{
-						sEdit.bind(items[sSel].action).keys[sRebindSlot] = Key::None;
-						Commit();
-					}
-				}
-				else if (*k == KeyChar('Q') || *k == Key::PageUp)
-				{
-					sPage = (sPage + (int)sPages.size() - 1) % (int)sPages.size();
-					sSel = 0;
-					sScroll = 0;
-					FixSelection(1);
-				}
-				else if (*k == KeyChar('E') || *k == Key::PageDown || *k == Key::Tab)
-				{
-					sPage = (sPage + 1) % (int)sPages.size();
-					sSel = 0;
-					sScroll = 0;
-					FixSelection(1);
-				}
-
 			}
 		}
 		const int wheel = Input::PopOverlayWheel();
@@ -808,243 +1640,29 @@ namespace pce::Overlay
 		dl->AddRect(ImVec2(p0.x + 6, p0.y + 6), ImVec2(p1.x - 6, p1.y - 6), alpha(kBorder, 0.35f), 0, 0, 1.0f);
 
 		// header
-		SheikahEye(dl, ImVec2(p0.x + fs * 2.0f, p0.y + fs * 1.6f), fs * 0.9f, alpha(kSheikah), (float)now);
+		SheikahEye(dl, ImVec2(p0.x + fs * 2.0f, p0.y + fs * 1.6f), fs * 0.9f, alpha(kAccent), (float)now);
 		dl->AddText(sFonts.title, fs * 1.45f, ImVec2(p0.x + fs * 3.6f, p0.y + fs * 0.85f), alpha(kText), "Settings");
-		// tabs
-		float tx = p1.x - fs * 1.0f;
-		for (int i = (int)sPages.size() - 1; i >= 0; i--)
-		{
-			const std::string& n = sPages[i].name;
-			ImVec2 ts = sFonts.item->CalcTextSizeA(fs, FLT_MAX, 0, n.c_str());
-			ImVec2 tp(tx - ts.x, p0.y + fs * 1.05f);
-			bool active = i == sPage;
-			ImRect r(ImVec2(tp.x - fs * 0.4f, tp.y - fs * 0.3f), ImVec2(tp.x + ts.x + fs * 0.4f, tp.y + ts.y + fs * 0.4f));
-			bool hover = sOpen && !sRebinding && r.Contains(io.MousePos);
-			dl->AddText(sFonts.item, fs, tp, alpha(active ? kSheikah : (hover ? kText : kTextDim)), n.c_str());
-			if (active)
-				dl->AddLine(ImVec2(tp.x, tp.y + ts.y + fs * 0.15f), ImVec2(tp.x + ts.x, tp.y + ts.y + fs * 0.15f), alpha(kSheikah), 2.0f);
-			if (hover && io.MouseDown[0] && !sMouseWasDown)
-			{
-				sPage = i;
-				sSel = 0;
-				sScroll = 0;
-				FixSelection(1);
-			}
-			tx -= ts.x + fs * 1.4f;
-		}
+		DrawTabs(dl, p1.x - fs * 1.0f, p0.y + fs * 1.05f, fs, a, sOpen.load(), false, 0.0f);
 		const float headerBottom = p0.y + fs * 3.0f;
 		dl->AddLine(ImVec2(p0.x + fs, headerBottom), ImVec2(p1.x - fs, headerBottom), alpha(kBorder, 0.6f), 1.0f);
 
 		// list
-		auto& page = sPages[sPage];
-		auto& items = page.items;
-		const float rowH = fs * 1.75f;
-		const bool isControls = page.name == "Controls";
+		const bool isControls = sPages[sPage].name == "Controls";
 		const float listTop = headerBottom + fs * (isControls ? 1.7f : 0.6f);
 		const float listBottom = p1.y - fs * 4.6f;
-		const float listH = listBottom - listTop;
-		const float contentH = rowH * items.size();
-		// keep selection visible
-		const float selY = sSel * rowH;
-		if (selY - sScroll < 0) sScroll = selY;
-		if (selY + rowH - sScroll > listH) sScroll = selY + rowH - listH;
-		if (wheel != 0 && sOpen && !sRebinding)
-			sScroll -= wheel * rowH * 2.0f;
-		sScroll = std::clamp(sScroll, 0.0f, std::max(0.0f, contentH - listH));
-
-		const float colLabel = p0.x + fs * 1.6f;
-		const float colValue = p0.x + pw * 0.62f;
-		const float colKey1 = p0.x + pw * 0.62f, colKey2 = p0.x + pw * 0.82f;
-		dl->PushClipRect(ImVec2(p0.x, listTop), ImVec2(p1.x, listBottom), true);
-		const bool mouseClicked = io.MouseDown[0] && !sMouseWasDown;
-		for (int i = 0; i < (int)items.size(); i++)
-		{
-			Item& it = items[i];
-			const float y = listTop + i * rowH - sScroll;
-			if (y + rowH < listTop || y > listBottom)
-				continue;
-			ImVec2 r0(p0.x + fs * 0.8f, y), r1(p1.x - fs * 0.8f, y + rowH * 0.92f);
-			const float ty = y + (rowH * 0.92f - fs) * 0.5f;
-			if (it.type == ItemType::Header)
-			{
-				dl->AddText(sFonts.small, fs * 0.72f, ImVec2(colLabel, ty + fs * 0.2f), alpha(kSheikah, 0.9f), it.label.c_str());
-				dl->AddLine(ImVec2(colLabel, y + rowH * 0.85f), ImVec2(r1.x - fs, y + rowH * 0.85f), alpha(kSheikahDim), 1.0f);
-				continue;
-			}
-			const bool hover = sOpen && !sRebinding && !sConfirmQuit && ImRect(r0, r1).Contains(io.MousePos) && io.MousePos.y >= listTop && io.MousePos.y <= listBottom;
-			if (hover && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0 || mouseClicked))
-				sSel = i;
-			const bool sel = i == sSel;
-			if (sel)
-			{
-				dl->AddRectFilled(r0, r1, alpha(IM_COL32(110, 225, 255, 28)));
-				dl->AddRect(r0, r1, alpha(kSheikah, 0.85f), 2.0f, 0, 1.5f);
-				// glowing corner ticks
-				float tk = fs * 0.5f;
-				dl->AddLine(r0, ImVec2(r0.x + tk, r0.y), alpha(kSheikah), 3.0f);
-				dl->AddLine(r0, ImVec2(r0.x, r0.y + tk), alpha(kSheikah), 3.0f);
-				dl->AddLine(r1, ImVec2(r1.x - tk, r1.y), alpha(kSheikah), 3.0f);
-				dl->AddLine(r1, ImVec2(r1.x, r1.y - tk), alpha(kSheikah), 3.0f);
-			}
-			dl->AddText(sFonts.item, fs, ImVec2(colLabel, ty), alpha(sel ? kText : kTextDim, sel ? 1.0f : 0.95f), it.label.c_str());
-			switch (it.type)
-			{
-			case ItemType::Slider:
-			{
-				const float bx0 = colValue, bx1 = r1.x - fs * 5.0f;
-				const float by = y + rowH * 0.46f;
-				float t = (*it.fval - it.fmin) / (it.fmax - it.fmin);
-				dl->AddLine(ImVec2(bx0, by), ImVec2(bx1, by), alpha(kBorder, 0.5f), 2.0f);
-				dl->AddLine(ImVec2(bx0, by), ImVec2(bx0 + (bx1 - bx0) * t, by), alpha(kSheikah), 3.0f);
-				dl->AddCircleFilled(ImVec2(bx0 + (bx1 - bx0) * t, by), fs * 0.28f, alpha(sel ? kSheikah : kText));
-				char buf[64];
-				snprintf(buf, sizeof(buf), it.fmt, *it.fval);
-				TextAligned(dl, sFonts.item, fs, ImVec2(r1.x - fs * 0.6f, ty), alpha(kText), buf, 1.0f);
-				if (sel && sOpen && io.MouseDown[0] && io.MousePos.x >= bx0 - fs && io.MousePos.x <= bx1 + fs && hover)
-				{
-					float nt = std::clamp((io.MousePos.x - bx0) / (bx1 - bx0), 0.0f, 1.0f);
-					float nv = it.fmin + nt * (it.fmax - it.fmin);
-					nv = roundf(nv / it.fstep) * it.fstep;
-					if (nv != *it.fval)
-					{
-						*it.fval = nv;
-						Commit();
-					}
-				}
-				break;
-			}
-			case ItemType::Toggle:
-			{
-				const char* v = *it.bval ? "ON" : "OFF";
-				TextAligned(dl, sFonts.item, fs, ImVec2(r1.x - fs * 0.6f, ty), alpha(*it.bval ? kSheikah : kText), v, 1.0f);
-				if (sel)
-					TextAligned(dl, sFonts.item, fs, ImVec2(r1.x - fs * 3.6f, ty), alpha(kTextDim), "\xE2\x97\x80", 1.0f);
-				if (hover && mouseClicked)
-					Adjust(it, 1);
-				break;
-			}
-			case ItemType::Choice:
-			{
-				const std::string& v = it.options[std::clamp(*it.ival, 0, (int)it.options.size() - 1)];
-				TextAligned(dl, sFonts.item, fs, ImVec2(r1.x - fs * 1.6f, ty), alpha(kText), v, 1.0f);
-				if (sel)
-				{
-					ImVec2 vs = sFonts.item->CalcTextSizeA(fs, FLT_MAX, 0, v.c_str());
-					TextAligned(dl, sFonts.item, fs * 0.8f, ImVec2(r1.x - fs * 2.4f - vs.x, ty + fs * 0.1f), alpha(kSheikah), "\xE2\x97\x80", 1.0f);
-					TextAligned(dl, sFonts.item, fs * 0.8f, ImVec2(r1.x - fs * 0.6f, ty + fs * 0.1f), alpha(kSheikah), "\xE2\x96\xB6", 1.0f);
-				}
-				if (hover && mouseClicked)
-					Adjust(it, io.MousePos.x < r1.x - fs * 6.0f ? -1 : 1);
-				break;
-			}
-			case ItemType::Binding:
-			{
-				const auto& b = sEdit.bind(it.action).keys;
-				for (int slot = 0; slot < 2; slot++)
-				{
-					const float cx = slot == 0 ? colKey1 + (colKey2 - colKey1) * 0.5f : colKey2 + (r1.x - colKey2) * 0.5f;
-					const bool editing = sRebinding && sRebindAction == it.action && sRebindSlot == slot;
-					const bool conflict = KeyHasConflict(it.action, b[slot]);
-					ImU32 col = editing ? kSheikah : (conflict ? kWarn : (sel ? kText : kTextDim));
-					if (editing)
-					{
-						const float pulse = 0.55f + 0.45f * sinf((float)now * 6.0f);
-						TextAligned(dl, sFonts.small, fs * 0.72f, ImVec2(cx, ty + fs * 0.12f), alpha(kSheikah, pulse), "Press a key...", 0.5f);
-					}
-					else
-						KeyCap(dl, sFonts.small, fs * 0.72f, ImVec2(cx, y + rowH * 0.46f), b[slot], alpha(col), a);
-					if (sel && sRebindSlot == slot && !editing)
-					{
-						ImVec2 c(cx, y + rowH * 0.46f);
-						dl->AddRect(ImVec2(c.x - (colKey2 - colKey1) * 0.45f, c.y - rowH * 0.38f), ImVec2(c.x + (colKey2 - colKey1) * 0.45f, c.y + rowH * 0.38f), alpha(kSheikah, 0.6f), 3.0f);
-					}
-					ImRect hr(ImVec2(cx - (colKey2 - colKey1) * 0.45f, y), ImVec2(cx + (colKey2 - colKey1) * 0.45f, y + rowH));
-					if (hover && hr.Contains(io.MousePos) && mouseClicked)
-					{
-						sRebindSlot = slot;
-						Activate(it);
-					}
-				}
-				break;
-			}
-			case ItemType::Button:
-				if (hover && mouseClicked)
-					Activate(it);
-				break;
-			default:
-				break;
-			}
-		}
-		dl->PopClipRect();
-		// column headings for controls
-		if (isControls)
-		{
-			TextAligned(dl, sFonts.small, fs * 0.72f, ImVec2(colKey1 + (colKey2 - colKey1) * 0.5f, headerBottom + fs * 0.55f), alpha(kTextDim), "Primary", 0.5f);
-			TextAligned(dl, sFonts.small, fs * 0.72f, ImVec2(colKey2 + (p1.x - fs * 0.8f - colKey2) * 0.5f, headerBottom + fs * 0.55f), alpha(kTextDim), "Secondary", 0.5f);
-		}
+		DrawRows(dl, ImRect(ImVec2(p0.x + fs * 0.8f, listTop), ImVec2(p1.x - fs * 0.8f, listBottom)), fs, a, sOpen.load(), true, sOpen.load() ? wheel : 0, now);
 
 		// description / help
 		const float helpY = listBottom + fs * 0.5f;
 		dl->AddLine(ImVec2(p0.x + fs, helpY), ImVec2(p1.x - fs, helpY), alpha(kBorder, 0.4f), 1.0f);
-		if (!items.empty() && sSel < (int)items.size())
-		{
-			std::string help = items[sSel].help;
-			if (items[sSel].type == ItemType::Binding)
-			{
-				const auto& b = sEdit.bind(items[sSel].action).keys;
-				for (Key kk : b)
-					if (KeyHasConflict(items[sSel].action, kk))
-						help = fmt::format("Conflict: {} is also assigned to \"{}\".", KeyDisplayName(kk), ConflictName(items[sSel].action, kk));
-			}
-			dl->AddText(sFonts.small, fs * 0.8f, ImVec2(p0.x + fs * 1.6f, helpY + fs * 0.5f), alpha(kText, 0.9f), help.c_str());
-		}
+		DrawHelp(dl, p0.x + fs * 1.6f, helpY + fs * 0.5f, pw - fs * 3.2f, fs, a, HelpText());
 		if (Graphics::RestartPending())
-			TextAligned(dl, sFonts.small, fs * 0.72f, ImVec2(p1.x - fs * 1.6f, helpY + fs * 0.55f), alpha(kSheikah, 0.9f), "Some changes apply after restarting", 1.0f);
+			TextAligned(dl, sFonts.small, fs * 0.72f, ImVec2(p1.x - fs * 1.6f, helpY + fs * 0.55f), alpha(kAccent, 0.9f), "Some changes apply after restarting", 1.0f);
 
 		// guide bar
-		const float gy = p1.y - fs * 1.7f;
-		struct G { const char* key; const char* text; };
-		const bool bindingRow = !items.empty() && items[sSel].type == ItemType::Binding;
-		std::vector<G> guide = sRebinding ? std::vector<G>{{"Esc", "Cancel"}} : std::vector<G>{{"Enter", bindingRow ? "Change Key" : "Select"}, {"\xE2\x97\x80 \xE2\x96\xB6", bindingRow ? "Column" : "Change"}, {"Q / E", "Page"}, {"Esc", "Back"}};
-		if (!sRebinding && bindingRow)
-			guide.insert(guide.begin() + 1, {"Del", "Clear"});
-		float gx = p1.x - fs * 1.2f;
-		for (int i = (int)guide.size() - 1; i >= 0; i--)
-		{
-			ImVec2 ts = sFonts.small->CalcTextSizeA(fs * 0.8f, FLT_MAX, 0, guide[i].text);
-			gx -= ts.x;
-			dl->AddText(sFonts.small, fs * 0.8f, ImVec2(gx, gy), alpha(kText), guide[i].text);
-			ImVec2 ks = sFonts.small->CalcTextSizeA(fs * 0.72f, FLT_MAX, 0, guide[i].key);
-			float kw = ks.x + fs * 0.8f;
-			gx -= kw + fs * 0.35f;
-			ImVec2 k0(gx, gy - fs * 0.08f), k1(gx + kw, gy + fs * 0.92f);
-			dl->AddRectFilled(k0, k1, alpha(IM_COL32(237, 232, 208, 235)), fs * 0.2f);
-			dl->AddText(sFonts.small, fs * 0.72f, ImVec2(gx + fs * 0.4f, gy + fs * 0.05f), alpha(IM_COL32(20, 20, 20, 255)), guide[i].key);
-			gx -= fs * 1.1f;
-		}
-
-		// toast
-		if (!sToast.empty() && now - sToastTime < 3.0)
-		{
-			float ta = (float)std::min(1.0, (3.0 - (now - sToastTime)) * 2.0);
-			ImVec2 ts = sFonts.small->CalcTextSizeA(fs * 0.85f, FLT_MAX, 0, sToast.c_str());
-			ImVec2 c(W * 0.5f, p0.y - fs * 1.2f);
-			dl->AddRectFilled(ImVec2(c.x - ts.x * 0.5f - fs, c.y - fs * 0.5f), ImVec2(c.x + ts.x * 0.5f + fs, c.y + ts.y + fs * 0.4f), alpha(IM_COL32(0, 0, 0, 200), ta));
-			dl->AddText(sFonts.small, fs * 0.85f, ImVec2(c.x - ts.x * 0.5f, c.y - fs * 0.05f), alpha(kText, ta), sToast.c_str());
-		}
-
-		// quit confirmation
-		if (sConfirmQuit)
-		{
-			dl->AddRectFilled(ImVec2(0, 0), ImVec2(W, H), IM_COL32(0, 0, 0, 120));
-			ImVec2 c(W * 0.5f, H * 0.5f);
-			ImVec2 b0(c.x - fs * 12, c.y - fs * 3), b1(c.x + fs * 12, c.y + fs * 3);
-			dl->AddRectFilled(b0, b1, IM_COL32(8, 10, 12, 240));
-			dl->AddRect(b0, b1, kBorder, 0, 0, 1.5f);
-			TextAligned(dl, sFonts.item, fs, ImVec2(c.x, c.y - fs * 1.6f), kText, "Quit to desktop?", 0.5f);
-			TextAligned(dl, sFonts.small, fs * 0.8f, ImVec2(c.x, c.y - fs * 0.2f), kTextDim, "Progress since your last save will be lost.", 0.5f);
-			TextAligned(dl, sFonts.small, fs * 0.8f, ImVec2(c.x, c.y + fs * 1.4f), kSheikah, "Enter: Quit      Esc: Cancel", 0.5f);
-		}
+		DrawGuide(dl, p1.x - fs * 1.2f, p1.y - fs * 1.7f, fs, a, ListGuide());
+		DrawToast(dl, W * 0.5f, p0.y - fs * 1.2f, fs, now);
+		DrawQuitConfirmation(dl, W, H, fs);
 		sMouseWasDown = io.MouseDown[0];
 	}
 }

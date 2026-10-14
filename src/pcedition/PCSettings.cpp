@@ -192,6 +192,7 @@ namespace pce
 			Get(m, "Movement", "ParryWithAttack", s.parryWithAttack);
 			Get(m, "Movement", "ToggleSprint", s.toggleSprint);
 			Get(m, "Movement", "ToggleShield", s.toggleShield);
+			Get(m, "Movement", "BombKeepsBow", s.bombKeepsBow);
 			Get(m, "Equipment", "WheelReleaseDelayMs", s.wheelReleaseDelayMs);
 			Get(m, "Equipment", "SelectorMouseStep", s.selectorMouseStep);
 			Get(m, "Equipment", "SelectorMoveKeys", s.selectorMoveKeys);
@@ -264,7 +265,8 @@ namespace pce
 		o << "WalkSpeed=" << s.walkSpeed << "\n";
 		o << "ParryWithAttack=" << b(s.parryWithAttack) << "\n";
 		o << "ToggleSprint=" << b(s.toggleSprint) << "\n";
-		o << "ToggleShield=" << b(s.toggleShield) << "\n\n";
+		o << "ToggleShield=" << b(s.toggleShield) << "\n";
+		o << "BombKeepsBow=" << b(s.bombKeepsBow) << "\n\n";
 		o << "[Equipment]\n";
 		o << "WheelReleaseDelayMs=" << s.wheelReleaseDelayMs << "\n";
 		o << "SelectorMouseStep=" << s.selectorMouseStep << "\n";

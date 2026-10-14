@@ -5,6 +5,10 @@
 namespace pce::Overlay
 {
 	void SetOpen(bool open);
+	// from the game's thread: opened by the next frame drawn
+	void RequestOpen();
+	// dev: the mouse as the menus see it (x, y in pixels of the window; off with x < 0)
+	void DebugMouse(float x, float y, bool down);
 	void DebugSetPage(int page);
 	bool IsOpen();
 	void Toggle();

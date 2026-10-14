@@ -191,6 +191,7 @@ struct
 bool nnNfp_writeCurrentAmiibo();
 
 #include "AmiiboCrypto.h"
+#include <openssl/sha.h>
 
 void nnNfpExport_SetActivateEvent(PPCInterpreter_t* hCPU)
 {
@@ -754,6 +755,91 @@ bool nnNfp_isInitialized()
 	return nfp_data.nfpIsInitialized;
 }
 
+std::string nnNfp_debugState()
+{
+	return fmt::format("initialized {} detecting {} active {} mounted {} touch {} ms ago", nfp_data.nfpIsInitialized, nfp_data.isDetecting,
+					   nfp_data.hasActiveAmiibo, nfp_data.isMounted, GetTickCount() - nfp_data.amiiboTouchTime);
+}
+
+bool nnNfp_isWaitingForTag()
+{
+	// (a tag put on the reader counts for 1.5 s, see nnNfp_update; one from earlier that is still flagged does not)
+	return nfp_data.nfpIsInitialized && nfp_data.isDetecting &&
+		   (!nfp_data.hasActiveAmiibo || GetTickCount() - nfp_data.amiiboTouchTime > 2000);
+}
+
+// PC Edition: a decrypted dump in the order the console decrypts a tag into (the "amiitool" layout, which amiibo
+// generators write) is made into an encrypted tag with Cemu's own amiibo code. What such a file lacks (the tag's serial
+// number, the key salt) is derived from the file, so that the same file is always the same amiibo.
+static bool nnNfp_encryptDecryptedDump(const std::vector<uint8>& file, AmiiboRawNFCData& out)
+{
+	if (file.size() < sizeof(AmiiboInternal))
+		return false;
+	AmiiboInternal intl;
+	memcpy(&intl, file.data(), sizeof(intl));
+	uint8* raw = (uint8*)&intl;
+	if (raw[2] != 0x0F || raw[3] != 0xE0)
+		return false; // (static lock bytes, at their place in this layout)
+	bool hasId = false;
+	for (int i = 0; i < 8; i++)
+		hasId |= raw[0x1DC + i] != 0;
+	if (!hasId)
+		return false;
+	uint8 hash[32];
+	SHA256(file.data(), file.size(), hash);
+	bool hasSerial = intl.nintendoId != 0;
+	for (uint8 b : intl.ntagSerial)
+		hasSerial |= b != 0;
+	if (!hasSerial)
+	{
+		const uint8 uid[7] = {0x04, hash[0], hash[1], hash[2], hash[3], hash[4], hash[5]}; // (0x04: NXP)
+		intl.ntagSerial[0] = uid[0];
+		intl.ntagSerial[1] = uid[1];
+		intl.ntagSerial[2] = uid[2];
+		intl.ntagSerial[3] = 0x88 ^ uid[0] ^ uid[1] ^ uid[2];
+		intl.ntagSerial[4] = uid[3];
+		intl.ntagSerial[5] = uid[4];
+		intl.ntagSerial[6] = uid[5];
+		intl.nintendoId = uid[6];
+	}
+	raw[0] = intl.ntagSerial[4] ^ intl.ntagSerial[5] ^ intl.ntagSerial[6] ^ intl.nintendoId; // check byte of the serial
+	raw[1] = 0x48;
+	raw[4] = 0xF1;
+	raw[5] = 0x10;
+	raw[6] = 0xFF;
+	raw[7] = 0xEE;
+	intl.ukn_A5 = 0xA5;
+	bool hasSalt = false;
+	for (uint8 b : intl.keygenSalt)
+		hasSalt |= b != 0;
+	if (!hasSalt)
+		SHA256(hash, sizeof(hash), intl.keygenSalt);
+	// the tag's signature first: the data's signature covers it
+	{
+		amiiboInternalKeys_t kData{}, kTag{};
+		amiiboInitMasterKeys(kData, kTag);
+		amiiboDerivedKeys_t derivedTag{};
+		amiiboCrypto_genKey(&kTag, &intl, &derivedTag);
+		uint32 mdLen = 32;
+		HMAC(EVP_sha256(), derivedTag.hmacKey, 16, raw + 0x1D4, 0x34, intl.tagHMAC, &mdLen);
+	}
+	// (amiiboEncrypt works on nfp_data: it is put back afterwards)
+	nnNfpLock();
+	const AmiiboInternal savedInternal = nfp_data.amiiboInternal;
+	const AmiiboRawNFCData savedNFC = nfp_data.amiiboNFCData;
+	nfp_data.amiiboInternal = intl;
+	memset(&nfp_data.amiiboNFCData, 0, sizeof(AmiiboRawNFCData));
+	const uint8 dynamicLock[4] = {0x01, 0x00, 0x0F, 0xBD}, cfg0[4] = {0x00, 0x00, 0x00, 0x04}, cfg1[4] = {0x5F, 0x00, 0x00, 0x00};
+	memcpy(nfp_data.amiiboNFCData.dynamicLock, dynamicLock, 4);
+	memcpy(nfp_data.amiiboNFCData.cfg0, cfg0, 4);
+	memcpy(nfp_data.amiiboNFCData.cfg1, cfg1, 4);
+	amiiboEncrypt(&out);
+	nfp_data.amiiboInternal = savedInternal;
+	nfp_data.amiiboNFCData = savedNFC;
+	nnNfpUnlock();
+	return true;
+}
+
 // CEMU NFC error codes
 #define NFC_ERROR_NONE					(0)
 #define NFC_ERROR_NO_ACCESS				(1)
@@ -774,6 +860,15 @@ bool nnNfp_touchNfcTagFromFile(const fs::path& filePath, uint32* nfcError)
 		return false;
 	}
 	memcpy(&rawData, nfcData->data(), sizeof(AmiiboRawNFCData));
+	if (rawData.cc[0] != 0xF1 || rawData.cc[1] != 0x10 || rawData.cc[2] != 0xFF || rawData.cc[3] != 0xEE)
+	{
+		AmiiboRawNFCData encrypted{};
+		if (nnNfp_encryptDecryptedDump(*nfcData, encrypted))
+		{
+			cemuLog_log(LogType::Force, "nn_nfp: {} is a decrypted dump, encrypted for use", _pathToUtf8(filePath.filename()));
+			rawData = encrypted;
+		}
+	}
 
 	// verify if the file is a valid ntag215/amiibo file
 	if (rawData.dynamicLock[0] != 0x01 || rawData.dynamicLock[1] != 0x00 || rawData.dynamicLock[2] != 0x0F || rawData.dynamicLock[3] != 0xBD)

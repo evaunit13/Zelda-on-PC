@@ -83,6 +83,13 @@ namespace pce::Input
 		std::atomic<bool> sOverlayOpen{false};
 		std::atomic<bool> sPointerMode{false};  // a game menu wants the mouse pointer
 		std::atomic<bool> sGameMenuOpen{false}; // any game menu / scope is shown (Esc = Back)
+		std::atomic<bool> sEmbedFocus{false};   // the PC settings in the System page have the keyboard
+		std::atomic<bool> sPanelHover{false};   // the mouse is over them
+		std::atomic<bool> sPopupOpen{false};    // a popup of the PC layer is open (amiibo)
+		std::atomic<bool> sSystemMenuRequest{false};
+		std::array<std::atomic<bool>, 256> sKeyLatched{};
+		std::mutex sPanelMutex;
+		Input::SystemPanel sPanel;
 		std::atomic<sint64> sEscGraceUntil{0};  // a menu was just closed with Esc: Esc does not open the PC menu yet
 		std::atomic<bool> sTiltActive{false};
 		std::atomic<bool> sFocused{false};
@@ -112,6 +119,21 @@ namespace pce::Input
 			if (sPresses.size() > 64)
 				sPresses.pop_front();
 			sPresses.push_back(k);
+		}
+
+		void OnWheel(sint32 delta)
+		{
+			// accumulate (supports high resolution wheels)
+			sWheelRemainder += delta;
+			const sint32 notches = sWheelRemainder / WHEEL_DELTA;
+			sWheelRemainder -= notches * WHEEL_DELTA;
+			if (notches == 0)
+				return;
+			if (!sOverlayOpen.load() && !sEmbedFocus.load() && !sPanelHover.load() && !sPopupOpen.load())
+				sWheelGame += notches; // (the game is paused under the PC menu: what is scrolled there is not for it)
+			sWheelOverlay += notches;
+			for (sint32 i = 0; i < std::abs(notches); i++)
+				PushPress(notches > 0 ? Key::WheelUp : Key::WheelDown);
 		}
 
 		void SetKey(uint16 vk, bool down)
@@ -170,7 +192,8 @@ namespace pce::Input
 			if (ri->header.dwType == RIM_TYPEMOUSE)
 			{
 				const RAWMOUSE& m = ri->data.mouse;
-				if ((m.usFlags & MOUSE_MOVE_ABSOLUTE) == 0 && (m.lLastX != 0 || m.lLastY != 0) && !sOverlayOpen.load())
+				if ((m.usFlags & MOUSE_MOVE_ABSOLUTE) == 0 && (m.lLastX != 0 || m.lLastY != 0) && !sOverlayOpen.load() && !sEmbedFocus.load() &&
+					!sPopupOpen.load())
 				{
 					std::lock_guard lock(sMouseMutex);
 					const sint64 t = QpcNow();
@@ -190,19 +213,7 @@ namespace pce::Input
 				if (f & RI_MOUSE_BUTTON_5_DOWN) SetKey(VK_XBUTTON2, true);
 				if (f & RI_MOUSE_BUTTON_5_UP) SetKey(VK_XBUTTON2, false);
 				if (f & RI_MOUSE_WHEEL)
-				{
-					// accumulate (supports high resolution wheels)
-					sWheelRemainder += (SHORT)m.usButtonData;
-					sint32 notches = sWheelRemainder / WHEEL_DELTA;
-					sWheelRemainder -= notches * WHEEL_DELTA;
-					if (notches != 0)
-					{
-						sWheelGame += notches;
-						sWheelOverlay += notches;
-						for (sint32 i = 0; i < std::abs(notches); i++)
-							PushPress(notches > 0 ? Key::WheelUp : Key::WheelDown);
-					}
-				}
+					OnWheel((SHORT)m.usButtonData);
 			}
 			else if (ri->header.dwType == RIM_TYPEKEYBOARD)
 			{
@@ -338,8 +349,14 @@ namespace pce::Input
 				sint32 keyDir = 0;        // movement keys stepping through it (Settings::selectorMoveKeys)
 				sint32 keyFrames = 0;
 				sint32 closeFrame = -1;   // bow selector: the shot is being cancelled before the aim button is let go
+				sint32 cancelFrame = -1;  // bow selector: frames the cancel button has been held
+				bool closeEmpty = false;  // bow selector: no bow drawn at the end (closed on "Remove", or the slot was empty)
+				bool shown = false;       // the game has shown the selector
+				bool openedEmpty = false; // it opened on an empty slot (no bow: the aim button drew nothing)
 			} sel;
 			sint64 selClosedQpc = 0;      // when a selector closed by itself (the game's menu takes a moment longer)
+			bool systemMenuWait = false;  // the pause menu is being opened on its System page (PC settings key)
+			uint32 systemMenuFrame = 0;
 			// tilt
 			float tiltPitch = 0.0f, tiltRoll = 0.0f; // degrees
 			// direct camera: keeps a tiny stick deflection while the mouse is moving
@@ -485,6 +502,41 @@ namespace pce::Input
 		{
 			sClimbCamFrame = sDebug.frameCounter.load();
 			OrbitCamTick(hCPU, 0x98, 0x8C);
+		}
+
+		// Horse camera (riding), update 0x02BD2A44 (r3 = camera). It keeps yaw / pitch in degrees too (+0x40 / +0x3C, copies
+		// at +0x88 / +0x80), but takes them from its pose every frame: the direction of the eye (pose +0x550) from the
+		// look-at point (pose +0x55C), pose = [[camera+0x10]]. So the mouse rotation turns the eye around the look-at
+		// point before the update. Same conventions as the angles of the other cameras (stick right / up lower them); the
+		// game limits the pitch to -40..60. The negligible stick deflection of the direct camera keeps the camera from
+		// swinging back behind the horse, as a touch of the stick does (+0x28: time left of manual control).
+		std::atomic<uint32> sHorseCamFrame{0xF0000000};
+		void HLE_HorseCamTick(PPCInterpreter_t* hCPU)
+		{
+			const uint32 cam = hCPU->gpr[3];
+			sHorseCamFrame = sDebug.frameCounter.load();
+			sCamTickFrame = sDebug.frameCounter.load();
+			const double yaw = TakePending(sPendingYaw, sYawAge);
+			const double pitch = TakePending(sPendingPitch, sPitchAge);
+			const uint32 holder = memory_isAddressRangeAccessible(cam + 0x10, 4) ? memory_readU32(cam + 0x10) : 0;
+			const uint32 pose = holder && memory_isAddressRangeAccessible(holder, 4) ? memory_readU32(holder) : 0;
+			if ((yaw != 0.0 || pitch != 0.0) && pose && memory_isAddressRangeAccessible(pose + 0x550, 0x18))
+			{
+				const double ex = memory_readFloat(pose + 0x550), ey = memory_readFloat(pose + 0x554), ez = memory_readFloat(pose + 0x558);
+				const double ax = memory_readFloat(pose + 0x55C), ay = memory_readFloat(pose + 0x560), az = memory_readFloat(pose + 0x564);
+				const double dx = ex - ax, dy = ey - ay, dz = ez - az;
+				const double dist = sqrt(dx * dx + dy * dy + dz * dz);
+				if (std::isfinite(dist) && dist > 0.1 && dist < 100.0)
+				{
+					constexpr double kDeg = 3.14159265358979323846 / 180.0;
+					const double y = atan2(dx, dz) + kGameYawSign * yaw * kDeg;
+					const double p = std::clamp(asin(std::clamp(dy / dist, -1.0, 1.0)) / kDeg + kGamePitchSign * pitch, -40.0, 60.0) * kDeg;
+					memory_writeFloat(pose + 0x550, (float)(ax + dist * cos(p) * sin(y)));
+					memory_writeFloat(pose + 0x554, (float)(ay + dist * sin(p)));
+					memory_writeFloat(pose + 0x558, (float)(az + dist * cos(p) * cos(y)));
+				}
+			}
+			hCPU->instructionPointer = hCPU->spr.LR;
 		}
 
 		void HLE_TalkCamTick(PPCInterpreter_t* hCPU)
@@ -733,16 +785,22 @@ namespace pce::Input
 			return sKeyDown[(uint16)k & 0xFF].load();
 		}
 
+		// a key as the game sees it: not while it is latched (held since the PC settings had it, see LatchHeldKeys)
+		bool KeyDownForGame(Key k)
+		{
+			return KeyDownNow(k) && !sKeyLatched[(uint16)k & 0xFF].load();
+		}
+
 		bool ActionDown(const Settings& s, Action a)
 		{
 			const auto& b = s.bind(a);
-			return KeyDownNow(b.keys[0]) || KeyDownNow(b.keys[1]);
+			return KeyDownForGame(b.keys[0]) || KeyDownForGame(b.keys[1]);
 		}
 
 		bool ActionDownNoMouse(const Settings& s, Action a)
 		{
 			const auto& b = s.bind(a);
-			return (!IsMouseKey(b.keys[0]) && KeyDownNow(b.keys[0])) || (!IsMouseKey(b.keys[1]) && KeyDownNow(b.keys[1]));
+			return (!IsMouseKey(b.keys[0]) && KeyDownForGame(b.keys[0])) || (!IsMouseKey(b.keys[1]) && KeyDownForGame(b.keys[1]));
 		}
 
 		// wheel notches routed to an action (positive count)
@@ -889,6 +947,7 @@ namespace pce::Input
 		osLib_addFunction("coreinit", "PCE_CamTick", HLE_CamTick);
 		osLib_addFunction("coreinit", "PCE_GlideTick", HLE_GlideTick);
 		osLib_addFunction("coreinit", "PCE_ClimbCamTick", HLE_ClimbCamTick);
+		osLib_addFunction("coreinit", "PCE_HorseCamTick", HLE_HorseCamTick);
 		osLib_addFunction("coreinit", "PCE_TalkCamTick", HLE_TalkCamTick);
 		osLib_addFunction("coreinit", "PCE_MagnetTick", HLE_MagnetTick);
 		osLib_addFunction("coreinit", "PCE_MagnetCamTick", HLE_MagnetCamTick);
@@ -961,6 +1020,7 @@ namespace pce::Input
 	{
 		sOverlayOpen = open;
 		sWheelOverlay = 0;
+		sWheelGame = 0;
 		ClearKeyPresses();
 	}
 
@@ -971,7 +1031,55 @@ namespace pce::Input
 
 	bool WantsCursorCaptured()
 	{
-		return sFocused.load() && !sOverlayOpen.load() && !sPointerMode.load();
+		return sFocused.load() && !sOverlayOpen.load() && !sPointerMode.load() && !sPopupOpen.load();
+	}
+
+	SystemPanel GetSystemPanel()
+	{
+		std::lock_guard lock(sPanelMutex);
+		return sPanel;
+	}
+
+	void SetEmbeddedFocus(bool focus)
+	{
+		if (sEmbedFocus.exchange(focus) != focus)
+		{
+			ClearKeyPresses();
+			sWheelOverlay = 0;
+			LatchHeldKeys(); // (Esc that leaves the settings must not close the menu, Enter must not confirm in it, ...)
+		}
+	}
+
+	bool EmbeddedFocus()
+	{
+		return sEmbedFocus.load();
+	}
+
+	void SetPanelHover(bool hover)
+	{
+		sPanelHover = hover;
+	}
+
+	void RequestSystemMenu()
+	{
+		sSystemMenuRequest = true;
+	}
+
+	void SetPopupOpen(bool open)
+	{
+		if (sPopupOpen.exchange(open) != open)
+		{
+			ClearKeyPresses();
+			sWheelOverlay = 0;
+			LatchHeldKeys();
+		}
+	}
+
+	void LatchHeldKeys()
+	{
+		for (size_t i = 0; i < sKeyLatched.size(); i++)
+			if (sKeyDown[i].load())
+				sKeyLatched[i] = true;
 	}
 
 	bool GameMenuOpen()
@@ -1007,6 +1115,16 @@ namespace pce::Input
 		std::map<std::pair<uint32, uint32>, uint32> sCallers;
 	}
 
+	void DebugRawWheel(sint32 delta)
+	{
+		OnWheel(delta);
+	}
+
+	void DebugRawKey(uint16 vk, bool down)
+	{
+		SetKey(vk, down);
+	}
+
 	std::string DebugPictureMap(float x, float y, float clientW, float clientH)
 	{
 		float ox, oy;
@@ -1020,9 +1138,9 @@ namespace pce::Input
 	std::string CameraAges()
 	{
 		const uint32 f = sDebug.frameCounter.load();
-		return fmt::format("cam {} aim {} scope {} glide {} climbcam {} talkcam {} magnet {}", f - sCamTickFrame.load(), f - sAimTickFrame.load(),
-						   f - sScopeTickFrame.load(), f - sGlideTickFrame.load(), f - sClimbCamFrame.load(), f - sTalkCamFrame.load(),
-						   f - sMagnetFrame.load());
+		return fmt::format("cam {} aim {} scope {} glide {} climbcam {} talkcam {} magnet {} horsecam {}", f - sCamTickFrame.load(),
+						   f - sAimTickFrame.load(), f - sScopeTickFrame.load(), f - sGlideTickFrame.load(), f - sClimbCamFrame.load(),
+						   f - sTalkCamFrame.load(), f - sMagnetFrame.load(), f - sHorseCamFrame.load());
 	}
 
 	void NoteVPADCaller(uint32 lr, uint32 length)
@@ -1108,7 +1226,10 @@ namespace pce::Input
 		ConsumeMouse(now, mdx, mdy);
 		sint32 wheel = sWheelGame.exchange(0);
 
-		const bool inputEnabled = (sFocused.load() || sDebug.forceFocus.load()) && !sOverlayOpen.load();
+		for (size_t i = 0; i < sKeyLatched.size(); i++)
+			if (sKeyLatched[i].load() && !sKeyDown[i].load())
+				sKeyLatched[i] = false;
+		const bool inputEnabled = (sFocused.load() || sDebug.forceFocus.load()) && !sOverlayOpen.load() && !sEmbedFocus.load() && !sPopupOpen.load();
 
 		std::array<bool, kActionCount> act{};
 		if (inputEnabled)
@@ -1124,6 +1245,21 @@ namespace pce::Input
 		// ---- game UI state (menus, context guides) and the mouse pointer in menus ----
 		const uint32 frameNo = sDebug.frameCounter.load();
 		const UI::State& ui = UI::Get(frameNo);
+		{
+			std::lock_guard panelLock(sPanelMutex);
+			sPanel.shown = ui.systemPanel && !ui.dialog;
+			sPanel.x0 = ui.systemRect.x0;
+			sPanel.y0 = ui.systemRect.y0;
+			sPanel.x1 = ui.systemRect.x1;
+			sPanel.y1 = ui.systemRect.y1;
+		}
+		if (!ui.systemPanel || ui.dialog)
+		{
+			if (sEmbedFocus.exchange(false))
+				ClearKeyPresses();
+			sPanelHover = false;
+		}
+		UI::SetBoxCursorHidden(sEmbedFocus.load());
 		Menus::FrameIO mio;
 		mio.frame = frameNo;
 		mio.focused = inputEnabled;
@@ -1356,6 +1492,33 @@ namespace pce::Input
 			fs.closeMenuFrames--;
 			hold |= VPAD_PLUS;
 		}
+		// the PC settings key during play: the pause menu opens on its System page, where the PC settings are. Where the
+		// pause menu cannot open (title screen, cutscenes, conversations, ...) the PC menu opens instead.
+		if (sSystemMenuRequest.exchange(false))
+		{
+			const bool play = ui.hud && !ui.anyMenu && !ui.dialog && !ui.title && !ui.scope && !ui.map && !ui.inventory &&
+							  !mio.pointerMode && !ui.Has("Skip");
+			if (play)
+			{
+				Menus::RequestPage(Menus::Page::System);
+				fs.systemMenuFrame = frameNo;
+				fs.systemMenuWait = true;
+			}
+			else
+				Overlay::RequestOpen();
+		}
+		if (fs.systemMenuWait)
+		{
+			if (ui.inventory)
+				fs.systemMenuWait = false;
+			else if (frameNo - fs.systemMenuFrame < 4)
+				hold |= VPAD_PLUS;
+			else if (frameNo - fs.systemMenuFrame > 45)
+			{
+				fs.systemMenuWait = false;
+				Overlay::RequestOpen(); // the pause menu did not come
+			}
+		}
 		if (down(Action::Target) && pressed(Action::Jump))
 			fs.lastDodgeQpc = now;
 		const bool afterDodge = fs.lastDodgeQpc != 0 && (double)(now - fs.lastDodgeQpc) / QpcFreq() < 3.0;
@@ -1467,7 +1630,9 @@ namespace pce::Input
 				// paraglider: the jump key puts it away again (the game's B); the key stays inert until it is released, so
 				// the next press in the air opens the paraglider again (the game's own X)
 				// (only a new press counts: holding the key from opening the paraglider does not close it)
-				if (pressed(Action::Jump) && (frameNo - sGlideTickFrame.load()) <= 2)
+				// (not with something in the hands, "Throw": there is no paraglider then; a cucco carries Link down in
+				// a glide of its own, and a press must stay the game's jump button there)
+				if (pressed(Action::Jump) && (frameNo - sGlideTickFrame.load()) <= 2 && !ui.Has("Throw"))
 					fs.glideClose = true;
 				if (!down(Action::Jump))
 					fs.glideClose = false;
@@ -1487,8 +1652,8 @@ namespace pce::Input
 					remap(Action::Attack, VPAD_Y, btnOr("Drop", VPAD_A));
 				else if (cancel && down(Action::Attack))
 					remap(Action::Attack, VPAD_Y, VPAD_A); // rune: activate (stasis, magnesis grab, cryonis, ...)
-				if (detonate && down(Action::Bow))
-					remap(Action::Bow, VPAD_ZR, btnOr("Detonate", VPAD_L)); // remote bomb
+				if (detonate && down(Action::Bow) && !s.bombKeepsBow)
+					remap(Action::Bow, VPAD_ZR, btnOr("Detonate", VPAD_L)); // remote bomb (bombKeepsBow: Use Rune, the game's own)
 				else if (cancel && down(Action::Bow))
 					remap(Action::Bow, VPAD_ZR, btnOr("Cancel", VPAD_B)); // rune: cancel
 				else if (heldItems && down(Action::Bow))
@@ -1615,13 +1780,24 @@ namespace pce::Input
 		{
 			// The bow selector holds the aim button for the game, and Link has nocked an arrow meanwhile (at once when
 			// the bow was already in his hands): letting go of the button would shoot it. The d-pad is released first
-			// (the selection is equipped), then the shot is cancelled with the game's cancel button.
+			// (the selection is equipped), then the shot is cancelled with the game's cancel button: once the game's menu
+			// has gone (a press while it closes is not taken, and on horseback the bow then fires), held for a few frames.
 			selectorOwnsStick = true;
 			hold |= sel.preButtons;
-			if (sel.closeFrame >= 2)
+			if (sel.cancelFrame < 0 && sel.closeFrame >= 4 && (!ui.anyMenu || sel.closeFrame >= 30))
+			{
+				if (sel.closeEmpty)
+					sel.active = false; // nothing drawn to cancel (on horseback the cancel button would dismount)
+				else
+					sel.cancelFrame = 0;
+			}
+			sel.closeFrame++;
+			if (sel.active && sel.cancelFrame >= 0)
+			{
 				hold |= VPAD_B;
-			if (++sel.closeFrame > 8)
-				sel.active = false;
+				if (++sel.cancelFrame >= 10)
+					sel.active = false; // (aim and cancel are let go of together)
+			}
 		}
 		else if (sel.active)
 		{
@@ -1680,6 +1856,11 @@ namespace pce::Input
 						sel.flickDir = 0;
 				}
 			}
+			if (ui.shortcut && !sel.shown)
+			{
+				sel.shown = true;
+				sel.openedEmpty = ui.shortcutName.empty() || ui.shortcutName == "Remove";
+			}
 			sel.frame++;
 			// closing conditions
 			bool wantClose;
@@ -1687,11 +1868,19 @@ namespace pce::Input
 				wantClose = !down(sel.sourceAction) || !inputEnabled;
 			else
 				wantClose = ((double)(now - sel.lastActivityQpc) / QpcFreq()) * 1000.0 > s.wheelReleaseDelayMs || !inputEnabled;
+			// the bow selector stays until the game has shown it (after a tap too): what it opened on tells whether the
+			// aim button drew a bow
+			if (sel.preButtons && !sel.shown && sel.frame < 40 && inputEnabled)
+				wantClose = false;
 			if (wantClose && sel.flickDir == 0 && sel.pendingSteps == 0)
 			{
 				// releasing the d-pad equips the highlighted item
 				if (sel.preButtons && !down(Action::Bow) && inputEnabled)
-					sel.closeFrame = 0; // (not when the player aims himself: his own button keeps the bow drawn)
+					{
+						sel.closeFrame = 0; // (not when the player aims himself: his own button keeps the bow drawn)
+						sel.closeEmpty = sel.openedEmpty || (ui.shortcut && (ui.shortcutName.empty() || ui.shortcutName == "Remove"));
+						cemuLog_log(LogType::Force, "PCE bow selector closes on '{}' (shown {}, opened empty {}): {}", ui.shortcutName, ui.shortcut, sel.openedEmpty, sel.closeEmpty ? "nothing to cancel" : "cancel");
+					}
 				else
 				{
 					sel.active = false;

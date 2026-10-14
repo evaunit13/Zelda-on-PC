@@ -97,6 +97,7 @@ namespace pce
 		bool parryWithAttack = true;        // shield raised + attack key = perfect guard
 		bool toggleSprint = false;          // one press keeps sprinting (until pressed again or standing still)
 		bool toggleShield = false;          // one press keeps Lock On / Shield held until pressed again
+		bool bombKeepsBow = false;          // a remote bomb is out: the bow key still draws the bow (Use Rune detonates)
 
 		// weapon wheel
 		float wheelReleaseDelayMs = 450.0f; // after the last wheel notch, release the selector (equips item)

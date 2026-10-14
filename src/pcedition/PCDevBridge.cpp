@@ -1,3 +1,6 @@
+#include "Cafe/OS/libs/nn_nfp/nn_nfp.h"
+#include "Cafe/OS/libs/nfc/nfc.h"
+#include "config/CemuConfig.h"
 #include "pcedition/PCDevBridge.h"
 #include "pcedition/PCInput.h"
 #include "pcedition/PCCamera.h"
@@ -300,6 +303,8 @@ namespace pce::DevBridge
 					std::string r = fmt::format("inv={} map={} title={} anyMenu={} A='{}' actions:", st.inventory, st.map, st.title, st.anyMenu, st.actionA);
 					for (auto& ac : st.actions)
 						r += fmt::format(" [{}:{}]", ac.text, (int)ac.button);
+					if (st.systemPanel)
+						r += fmt::format(" system=({:.3f},{:.3f})-({:.3f},{:.3f})", st.systemRect.x0, st.systemRect.y0, st.systemRect.x1, st.systemRect.y1);
 					r += " buttons:";
 					for (auto& mb : st.buttons)
 						r += fmt::format(" [{} ({:.2f},{:.2f})-({:.2f},{:.2f})]", mb.label, mb.rect.x0, mb.rect.y0, mb.rect.x1, mb.rect.y1);
@@ -428,6 +433,35 @@ namespace pce::DevBridge
 					sSnaps.clear();
 					return "ok";
 				}
+				if (c == "rawkey" && a.size() > 2)
+				{
+					Input::DebugRawKey((uint16)u(1), u(2) != 0); // rawkey <virtual key> <1 down | 0 up>
+					return "ok";
+				}
+				if (c == "pcmouse" && a.size() > 1)
+				{
+					Overlay::DebugMouse(f(1), a.size() > 2 ? f(2) : 0.0f, a.size() > 3 && u(3) != 0); // pcmouse <x> <y> [down] | pcmouse -1
+					return "ok";
+				}
+				if (c == "barriers" && a.size() > 1)
+				{
+					GetConfig().vk_accurate_barriers = u(1) != 0; // barriers <0|1>: Vulkan accurate barriers (for measurements)
+					return "ok";
+				}
+				if (c == "nfpstate")
+					return nnNfp_debugState();
+				if (c == "nfctouch" && a.size() > 1)
+				{
+					// nfctouch <file>: put an amiibo file on the emulated reader (as the amiibo popup does)
+					uint32 err = 0;
+					const bool ok = nfc::TouchTagFromFile(_utf8ToPath(line.substr(line.find(' ') + 1)), &err);
+					return ok ? "ok" : fmt::format("err {}", err);
+				}
+				if (c == "rawwheel")
+				{
+					Input::DebugRawWheel((sint32)f(1)); // rawwheel <delta>: as from the mouse, 120 = one notch up
+					return "ok";
+				}
 				if (c == "picmap")
 					return Input::DebugPictureMap(f(1), f(2), f(3), f(4)); // picmap <x> <y> <client width> <client height>
 				if (c == "camage")
@@ -438,6 +472,8 @@ namespace pce::DevBridge
 					return UI::PerfStats();
 				if (c == "hudsync")
 					return UI::HudSyncStats();
+				if (c == "panechain" && a.size() > 2)
+					return UI::PaneChain(a[1], a[2]); // panechain <screen> <text pane name>
 				if (c == "hudtrace" && a.size() > 1)
 					return UI::HudTrace(a[1]);
 				if (c == "pin" && a.size() > 1)

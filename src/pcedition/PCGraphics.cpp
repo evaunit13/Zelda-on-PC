@@ -111,6 +111,15 @@ mtlr r0
 stwu r1, -0x1f8(r1)
 b 0x02BEE0FC
 
+; horse camera (riding): its update (0x02BD2A44, r3 = camera) takes its angles from the pose every frame; the eye is
+; turned around the look-at point by the mouse rotation before the update runs
+_pceHorseCamEntry:
+mflr r0
+bl import.coreinit.PCE_HorseCamTick
+mtlr r0
+stwu r1, -0x108(r1)
+b 0x02BD2A48
+
 ; conversation camera: its update (0x02BCB3A0, r3 = camera) keeps yaw / pitch in degrees at +0x48 / +0x40
 _pceTalkCamEntry:
 mflr r0
@@ -266,6 +275,7 @@ blr
 0x02B9B8A0 = b _pceCamEntry
 0x02BEE0F8 = b _pceClimbCamEntry
 0x02BCB3A0 = b _pceTalkCamEntry
+0x02BD2A44 = b _pceHorseCamEntry
 0x020D72D0 = b _pceMagnetEntry
 0x02BF02A8 = bla _pceMagnetCam
 0x02BD8AB8 = bla _pceMagnetTarget
@@ -549,6 +559,7 @@ blr
 		WriteCameraPatch(pce / "patch_PCCamera.asm");
 		// keyboard & mouse button prompts (font archive + resource size table in the pack's content folder)
 		Prompts::Prepare(pce);
+		Prompts::PrepareTips(pce);
 		sAppliedAtBoot = GetSettings();
 	}
 

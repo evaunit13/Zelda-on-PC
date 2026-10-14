@@ -55,6 +55,10 @@ namespace pce::UI
 		bool hud = false;          // gameplay HUD screen is shown (hidden in cutscenes / events)
 		std::vector<Action> actions;      // visible context actions (guides, do-command diamond)
 		std::string actionA;              // visible A action of the do-command prompt ("Take", "Stop Time", ...)
+		bool shortcut = false;            // a weapon / bow / shield / rune selector is shown
+		bool systemPanel = false;         // the System page of the pause menu is shown: its picture of the GamePad (hidden)
+		Rect systemRect{};                //   lies here; the PC settings are drawn in its place
+		std::string shortcutName;         // its highlighted entry (English for "Remove"; empty: the slot is empty)
 		std::vector<MenuButton> buttons;  // visible menu buttons (title, system windows, game over, ...)
 
 		bool Has(std::string_view text) const;
@@ -121,12 +125,22 @@ namespace pce::UI
 		float alpha;
 	};
 	std::vector<HudPrompt> GetHudPrompts();
+	// "Ability Controls" (System page): the pages show pictures of the GamePad with the button to use lit. The pictures
+	// are hidden; this is where they were and which buttons they showed (game button codes U+E040.., or one of the
+	// composite glyphs of PCPrompts for a stick's two directions), for the PC keys drawn in their place
+	struct TipKeys
+	{
+		Rect rect;
+		std::vector<uint16> codes;
+	};
+	std::vector<TipKeys> GetTipKeys();
 	// frame synchronisation of the HUD prompts: the game finished a frame (CPU thread, GX2CopyColorBufferToScanBuffer of
 	// the TV image) / the GPU thread is about to show that frame
 	void OnGameFrame();
 	void OnGpuFrame();
 	std::string HudSyncStats();
 	std::string HudTrace(const std::string& cmd); // developer: start | dump | chain
+	std::string PaneChain(const std::string& screen, const std::string& name); // developer: flags / alpha of a text pane and its ancestors
 	// Esc safety net: screens that look stuck "shown" are ignored until the game hides them
 	void SuppressStuckScreens();
 	// diagnostics: cost of the per-frame UI analysis
@@ -138,6 +152,9 @@ namespace pce::UI
 	// page the pause menu opens on next time (0 inventory, 1 system, 2 adventure log); the game stores the page it was
 	// closed on and reads it back when the menu opens. False if the game's menu data is not available.
 	bool SetPauseMenuStartPage(int page);
+	// the menus' selection box (BoxCursorTV) off while the PC settings in the System page have the keyboard: one selection
+	// on the screen, not two
+	void SetBoxCursorHidden(bool hidden);
 	// true when a game menu/screen that wants a mouse pointer is shown (title, file select, dialogs, inventory, map, game over)
 	bool PointerScreenShown(const State& st);
 

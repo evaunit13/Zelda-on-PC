@@ -17,6 +17,9 @@ namespace pce::Prompts
 {
 	// generate / refresh the font archive in the pack's content folder (fast when nothing changed)
 	void Prepare(const fs::path& packDir);
+	// the loading screen tips of the text language without the ones that do not fit the PC (message pack in the pack's
+	// content folder, made from the dump; fast when nothing changed)
+	void PrepareTips(const fs::path& packDir);
 
 	// glyph code of a key (U+E100+VK), or 0 if the prompt font has no glyph for it
 	uint16 KeyGlyph(Key k);

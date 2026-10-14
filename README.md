@@ -26,7 +26,7 @@ installer, and none are downloaded.
 | On-screen prompts | The buttons of the Wii U GamePad | Your own keys and mouse buttons |
 | Menus | Stick and buttons | Mouse: hover, click, drag, wheel |
 | Frame rate | FPS++ graphic pack, set up by hand | Built in, **plus AMD FSR 3 frame generation** |
-| Settings | Emulator dialogs and graphic packs | One in-game menu (`Esc`) |
+| Settings | Emulator dialogs and graphic packs | In the game's own pause menu (`Esc`) |
 
 ## Features
 
@@ -50,8 +50,8 @@ HUD**, so the interface is drawn on top at full sharpness instead of being inter
 ### Mouse and keyboard, made for this game
 
 - **1:1 mouse camera.** Raw input, no acceleration, no smoothing. The mouse does not pretend to be an analog stick: the
-  game's camera code is patched to take the rotation directly, in the third person camera, while aiming the bow, in the
-  scope, while climbing and in conversations.
+  game's camera code is patched to take the rotation directly, in the third person camera, on horseback, while aiming
+  the bow, in the scope, while climbing and in conversations.
 - **Every action rebindable**, two keys per action, with conflict highlighting.
 - **Weapons on the mouse wheel**, arrows while aiming. Hold `1` – `4` for the weapon, bow, shield and rune selectors.
   As an option (`Esc` → **Camera**), the movement keys step through an open selector and move the cursor in the
@@ -60,11 +60,13 @@ HUD**, so the interface is drawn on top at full sharpness instead of being inter
 - Perfect guard with the attack button while the shield is up, flurry rush with mouse clicks, the jump key closes and
   reopens the paraglider.
 - **Motion control shrines with the mouse**: `T` tilts the virtual GamePad.
+- As an option, remote bombs keep the bow on the right mouse button (Use Rune detonates them).
 
 ### Your keys on screen
 
 The game's button prompts show the key or mouse button that is bound to the action, and follow your rebinding. The
-glyphs are drawn for this project in the style of the game.
+glyphs are drawn for this project in the style of the game. The pages of **Ability Controls** (pause menu, System) show
+your keys where the game has pictures of the GamePad.
 
 <p align="center"><img src="docs/prompts.png" width="560" alt="Key and mouse prompt glyphs"></p>
 
@@ -80,13 +82,19 @@ glyphs are drawn for this project in the style of the game.
 
 - Starts directly into the game: no emulator window, no game list, no first-run wizard.
 - Borderless fullscreen (`Alt+Enter` toggles a window), cursor captured while playing and released in menus.
-- **One settings menu** in the game's style (`Esc`): camera, controls, motion, graphics. It is stored in a readable
-  `settings.ini`.
+- **Settings in the game's own pause menu.** `Esc` opens it on its System page (save, load, options), where the PC
+  settings take the place of the game's picture of the GamePad: camera, controls, motion, graphics, game. Mouse or
+  keyboard (`→` to go in, `Esc` to come out). On the title screen `Esc` opens them on their own. They are stored in a
+  readable `settings.ini`.
 - Resolution from 720p to 4K, frame rate limits from 30 to 240 FPS with corrected game speed and physics, shadows,
   anti-aliasing, V-Sync.
 - **Aspect ratio:** 16:9, 16:10, 21:9 and 32:9, with the HUD at the edges of the screen or centred on ultrawide. An
   ultrawide main display is detected. New, and so far tried in a window only, not on an ultrawide display.
 - Inventory, map and Adventure Log open directly on their page (`Tab` / `I`, `M`, `J`).
+- **amiibo from files.** When the amiibo rune looks for an amiibo, a window lists your amiibo files (`.bin` dumps of
+  your figures, also the decrypted kind amiibo tools write); choose one and it is scanned. Files are added with **Add
+  amiibo File...** in that window or under `Esc` → **Game**. The rune itself is turned on in the game's Options.
+- Loading screen tips that make no sense on a PC (aiming by tilting the GamePad, amiibo, Wolf Link) are left out.
 - **Language and units:** the text language is picked from the ones your copy of the game has, and the temperature
   can be shown in Celsius or Fahrenheit whatever the region of the game is.
 - Your existing Cemu save is **copied** on the first start. Cemu itself is never changed.
@@ -132,7 +140,7 @@ All of these are defaults. Change them in `Esc` → **Controls**.
 | Move | `W` `A` `S` `D` | | Inventory | `Tab` / `I` |
 | Camera | Mouse | | Map | `M` |
 | Jump / paraglider | `Space` | | Adventure Log | `J` |
-| Sprint / cancel | `Shift` | | PC settings | `Esc` / `F1` |
+| Sprint / cancel | `Shift` | | Pause menu, PC settings | `Esc` / `F1` |
 | Walk | `Ctrl` | | Weapon / bow / shield / rune selector | hold `1` `2` `3` `4` |
 | Crouch | `C` | | Next / previous weapon | Mouse wheel |
 | Attack | Left mouse | | Menu navigation | Arrow keys, `Enter`, `Backspace` |

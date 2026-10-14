@@ -13,6 +13,9 @@ void nnNfp_update();
 
 bool nnNfp_isInitialized();
 bool nnNfp_touchNfcTagFromFile(const fs::path& filePath, uint32* nfcError);
+// PC Edition: the title is looking for a tag (StartDetection .. StopDetection) and none is on the reader
+bool nnNfp_isWaitingForTag();
+std::string nnNfp_debugState();
 
 #define NFP_STATE_NONE			(0)
 #define NFP_STATE_INIT			(1)

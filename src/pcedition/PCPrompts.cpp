@@ -209,6 +209,162 @@ namespace pce::Prompts
 			return out;
 		}
 
+		// compressing Yaz0 (greedy, hash chains): the message archives would grow from 2 to 7 MB stored literally
+		std::vector<uint8> Yaz0Encode(const std::vector<uint8>& in, uint32 alignment)
+		{
+			constexpr size_t kWindow = 0x1000, kMaxLen = 0x111, kMinLen = 3;
+			constexpr int kChain = 48;
+			const size_t n = in.size();
+			std::vector<uint8> out;
+			out.reserve(16 + n / 2);
+			out.resize(16, 0);
+			memcpy(out.data(), "Yaz0", 4);
+			WB32(out.data() + 4, (uint32)n);
+			WB32(out.data() + 8, alignment);
+			std::vector<sint32> head(1 << 16, -1), prev(n, -1);
+			auto hash3 = [&](size_t i) { return (uint32)(((uint32)in[i] << 16 | (uint32)in[i + 1] << 8 | in[i + 2]) * 2654435761u) >> 16; };
+			auto insert = [&](size_t i) {
+				if (i + kMinLen <= n)
+				{
+					const uint32 h = hash3(i);
+					prev[i] = head[h];
+					head[h] = (sint32)i;
+				}
+			};
+			size_t pos = 0;
+			while (pos < n)
+			{
+				const size_t flagPos = out.size();
+				out.push_back(0);
+				uint8 flags = 0;
+				for (int bit = 7; bit >= 0 && pos < n; bit--)
+				{
+					size_t bestLen = 0, bestDist = 0;
+					if (pos + kMinLen <= n)
+					{
+						const size_t maxLen = std::min(kMaxLen, n - pos);
+						int chain = 0;
+						for (sint32 cand = head[hash3(pos)]; cand >= 0 && pos - (size_t)cand <= kWindow && chain < kChain; cand = prev[cand], chain++)
+						{
+							size_t l = 0;
+							while (l < maxLen && in[cand + l] == in[pos + l])
+								l++;
+							if (l > bestLen)
+							{
+								bestLen = l;
+								bestDist = pos - cand;
+								if (l == maxLen)
+									break;
+							}
+						}
+					}
+					if (bestLen >= kMinLen)
+					{
+						const size_t d = bestDist - 1;
+						if (bestLen >= 0x12)
+						{
+							out.push_back((uint8)(d >> 8));
+							out.push_back((uint8)d);
+							out.push_back((uint8)(bestLen - 0x12));
+						}
+						else
+						{
+							out.push_back((uint8)(((bestLen - 2) << 4) | (d >> 8)));
+							out.push_back((uint8)d);
+						}
+						for (size_t k = 0; k < bestLen; k++)
+							insert(pos + k);
+						pos += bestLen;
+					}
+					else
+					{
+						flags |= (uint8)(1 << bit);
+						out.push_back(in[pos]);
+						insert(pos);
+						pos++;
+					}
+				}
+				out[flagPos] = flags;
+			}
+			return out;
+		}
+
+		// where a file's data lies inside a SARC
+		bool SarcLocate(const std::vector<uint8>& d, const std::string& name, size_t& offset, size_t& size)
+		{
+			if (d.size() < 0x20 || memcmp(d.data(), "SARC", 4) != 0 || RB16(d.data() + 6) != 0xFEFF)
+				return false;
+			const uint32 dataOff = RB32(d.data() + 0x0C);
+			const uint8* sfat = d.data() + RB16(d.data() + 4);
+			const uint16 count = RB16(sfat + 6);
+			const uint8* nodes = sfat + 0x0C;
+			const uint8* sfnt = nodes + count * 0x10;
+			const uint8* names = sfnt + RB16(sfnt + 4);
+			for (uint16 i = 0; i < count; i++)
+			{
+				const uint8* nd = nodes + i * 0x10;
+				const uint32 attr = RB32(nd + 4), b = RB32(nd + 8), e = RB32(nd + 12);
+				if ((attr & 0x01000000) && name == (const char*)(names + (attr & 0xFFFF) * 4) && b <= e && dataOff + e <= d.size())
+				{
+					offset = dataOff + b;
+					size = e - b;
+					return true;
+				}
+			}
+			return false;
+		}
+
+		// Points labels of a MSBT at the message of another label (in place: only the label table's indices change).
+		// Returns how many were redirected.
+		int MsbtRedirect(uint8* d, size_t size, const std::vector<std::pair<const char*, const char*>>& redirects)
+		{
+			if (size < 0x30 || memcmp(d, "MsgStdBn", 8) != 0 || d[8] != 0xFE || d[9] != 0xFF)
+				return 0;
+			uint8* labels = nullptr;
+			uint32 labelsSize = 0;
+			size_t off = 0x20;
+			for (uint32 i = 0, count = RB16(d + 0x0E); i < count && off + 0x10 <= size; i++)
+			{
+				const uint32 sz = RB32(d + off + 4);
+				if (off + 0x10 + sz > size)
+					return 0;
+				if (memcmp(d + off, "LBL1", 4) == 0)
+				{
+					labels = d + off + 0x10;
+					labelsSize = sz;
+				}
+				off = (off + 0x10 + sz + 0x0F) & ~(size_t)0x0F;
+			}
+			if (!labels || labelsSize < 4)
+				return 0;
+			std::unordered_map<std::string, uint8*> entry; // label -> its index field
+			const uint32 slots = RB32(labels);
+			for (uint32 s = 0; s < slots && 4 + (s + 1) * 8 <= labelsSize; s++)
+			{
+				const uint32 count = RB32(labels + 4 + s * 8);
+				uint32 p = RB32(labels + 8 + s * 8);
+				for (uint32 k = 0; k < count && p < labelsSize; k++)
+				{
+					const uint32 len = labels[p];
+					if (p + 1 + len + 4 > labelsSize)
+						return 0;
+					entry[std::string((const char*)labels + p + 1, len)] = labels + p + 1 + len;
+					p += 1 + len + 4;
+				}
+			}
+			int done = 0;
+			for (const auto& [from, to] : redirects)
+			{
+				auto f = entry.find(from), t = entry.find(to);
+				if (f != entry.end() && t != entry.end())
+				{
+					WB32(f->second, RB32(t->second));
+					done++;
+				}
+			}
+			return done;
+		}
+
 		// ---------------------------------------------------------------- CRC32 (RSTB keys)
 		uint32 Crc32(std::string_view s)
 		{
@@ -481,7 +637,7 @@ namespace pce::Prompts
 		// every text the PC layer looks for (PCInput, PCMenus, PCUI)
 		static const std::set<std::string> kTexts = {"Place pin", "Throw", "Quit",  "Cancel", "Detonate", "Let go", "Skip", "Dash",
 													 "Push",      "Pull",  "Far",   "Near",   "Jump",     "Save",   "Load",
-													 "Drop",      "Put away"};
+													 "Drop",      "Put away", "Remove"};
 		std::unordered_map<std::string, std::string> english, local;
 		const bool ok = LoadMessages("en", [&](const std::string&, const std::string& text) { return kTexts.count(text) != 0; }, english) &&
 						LoadMessages(language, [&](const std::string& label, const std::string&) { return english.count(label) != 0; }, local);
@@ -614,5 +770,104 @@ namespace pce::Prompts
 		WriteFileAtomic(stampPath, stampData);
 		sActive = true;
 		cemuLog_log(LogType::Force, "PCE prompts: installed keyboard & mouse prompts ({} -> {} bytes)", sarc.size(), newSarc.size());
+	}
+
+	// Loading screen tips that do not fit the PC: aiming by tilting the GamePad, the amiibo rune, Wolf Link (summoned with
+	// his amiibo). Their labels are pointed at other tips of the same file, so this works in every language and no text of
+	// ours is needed. ("Basic Controls" stays: the System page of the pause menu has the PC controls now.)
+	void PrepareTips(const fs::path& packDir)
+	{
+		static const std::vector<std::pair<std::string, std::vector<std::pair<const char*, const char*>>>> kRedirects = {
+			{"Tips/TipsNotify.msbt", {{"Notify_01", "Notify_00"}}},
+			{"Tips/TipsPlayer.msbt",
+			 {{"amiibo_01", "Player_17"}, {"amiibo_02", "Player_19"}, {"Wolf_01", "Player_20"},
+			  {"Wolf_02", "Player_09"}, {"Wolf_03", "Player_16"}, {"Wolf_04", "Player_24"}, {"Wolf_05", "Player_14"},
+			  {"Wolf_06", "Player_26"}}},
+		};
+		std::error_code ec;
+		const std::string language = GetSettings().language.empty() ? std::string("en") : GetSettings().language;
+		const fs::path outDir = packDir / "content" / "Pack";
+		const fs::path stampPath = packDir / "tips.stamp";
+		std::vector<std::pair<std::string, std::vector<uint8>>> sources; // pack name -> the dump's pack
+		std::ostringstream st;
+		st << "tips v2|" << language;
+		for (const char* region : {"EU", "US", "JP"})
+		{
+			const std::string name = fmt::format("Bootup_{}{}.pack", region, language);
+			std::vector<uint8> raw;
+			if (ReadDumpFile("Pack/" + name, raw))
+			{
+				st << "|" << name << ":" << raw.size() << ":" << Crc32(std::string_view((const char*)raw.data(), raw.size()));
+				sources.emplace_back(name, std::move(raw));
+			}
+		}
+		const std::string stamp = st.str();
+		{
+			std::vector<uint8> old;
+			bool present = !sources.empty();
+			for (const auto& [name, raw] : sources)
+				present = present && fs::exists(outDir / name, ec);
+			if (present && ReadFile(stampPath, old) && std::string(old.begin(), old.end()) == stamp)
+				return;
+		}
+		// start from the dump's packs: whatever an earlier run wrote (another language, older list) goes
+		fs::remove(stampPath, ec);
+		if (fs::exists(outDir, ec))
+		{
+			for (const auto& e : fs::directory_iterator(outDir, ec))
+			{
+				const std::string n = _pathToUtf8(e.path().filename());
+				if (n.rfind("Bootup_", 0) == 0 && n.size() > 5 && n.compare(n.size() - 5, 5, ".pack") == 0)
+					fs::remove(e.path(), ec);
+			}
+		}
+		size_t written = 0;
+		for (const auto& [name, raw] : sources)
+		{
+			std::vector<uint8> pack, msg;
+			std::vector<SarcFile> files;
+			uint32 hashKey = 0x65;
+			if (!SarcRead(Yaz0Decode(raw, pack) ? pack : raw, files, hashKey))
+				continue;
+			int redirected = 0;
+			bool ok = false;
+			for (SarcFile& file : files)
+			{
+				if (file.name.size() < 6 || file.name.compare(file.name.size() - 6, 6, ".ssarc") != 0 || !Yaz0Decode(file.data, msg))
+					continue;
+				for (const auto& [msbt, list] : kRedirects)
+				{
+					size_t off = 0, size = 0;
+					if (SarcLocate(msg, msbt, off, size))
+						redirected += MsbtRedirect(msg.data() + off, size, list);
+				}
+				std::vector<uint8> enc = Yaz0Encode(msg, RB32(file.data.data() + 8));
+				std::vector<uint8> check;
+				if (!Yaz0Decode(enc, check) || check != msg)
+				{
+					cemuLog_log(LogType::Force, "PCE tips: compression check failed for {}", file.name);
+					break;
+				}
+				file.data = std::move(enc);
+				ok = true;
+				break;
+			}
+			if (!ok || redirected == 0)
+			{
+				cemuLog_log(LogType::Force, "PCE tips: {} left as it is ({} tips redirected)", name, redirected);
+				continue;
+			}
+			fs::create_directories(outDir, ec);
+			if (WriteFileAtomic(outDir / name, SarcWrite(files, hashKey, 4)))
+			{
+				written++;
+				cemuLog_log(LogType::Force, "PCE tips: {} tips that do not fit the PC pointed at others in {}", redirected, name);
+			}
+		}
+		if (written == sources.size() && written > 0)
+		{
+			std::vector<uint8> stampData(stamp.begin(), stamp.end());
+			WriteFileAtomic(stampPath, stampData);
+		}
 	}
 }

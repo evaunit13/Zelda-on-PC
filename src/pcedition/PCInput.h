@@ -45,6 +45,26 @@ namespace pce
 		// a game menu, the map or the scope is shown (Esc acts as Back there)
 		bool GameMenuOpen();
 
+		// ---- the PC settings in the System page of the pause menu (see PCOverlay) ----
+		// where the game would show its picture of the GamePad (normalized picture coordinates), from the last game frame
+		struct SystemPanel
+		{
+			bool shown = false;
+			float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+		};
+		SystemPanel GetSystemPanel();
+		// the settings have the keyboard (and the wheel): the game gets no input meanwhile
+		void SetEmbeddedFocus(bool focus);
+		bool EmbeddedFocus();
+		// the mouse is over the settings: the wheel scrolls them instead of switching the menu's pages
+		void SetPanelHover(bool hover);
+		// the PC settings key during play: the pause menu opens on its System page (the PC menu when it cannot open)
+		void RequestSystemMenu();
+		// keys held right now count for the game only after they have been released
+		void LatchHeldKeys();
+		// a popup of the PC layer (amiibo) is open over the game: it has keyboard, wheel and a free cursor
+		void SetPopupOpen(bool open);
+
 		// dev bridge: a raw mouse movement as if it came from the device (goes through the same path as real input)
 		void DebugRawMouse(sint32 dx, sint32 dy);
 
@@ -88,6 +108,10 @@ namespace pce
 		std::string CameraAges();
 		// dev: a client area position mapped to the game's picture, and the picture's place in the window
 		std::string DebugPictureMap(float x, float y, float clientW, float clientH);
+		// dev: a wheel movement taken like one from the mouse (WHEEL_DELTA = one notch)
+		void DebugRawWheel(sint32 delta);
+		// dev: a key going down / up like one from the keyboard (virtual key code)
+		void DebugRawKey(uint16 vk, bool down);
 		std::string VPADCallers();
 		// diagnostics: the motion values the game was given last (pose, attitude matrix, angles, rates)
 		std::string MotionInfo();

@@ -693,7 +693,7 @@ namespace pce::UI
 				g = rmb;
 			else if (has("Place pin") || has("Throw"))
 				g = lmb;
-			else if (has("Quit") || has("Cancel") || has("Detonate"))
+			else if (has("Quit") || has("Cancel") || (has("Detonate") && !s.bombKeepsBow))
 				g = rmb;
 			else if (has("Let go") && sActionOffered)
 				g = 0; // climbing with a fruit in reach: the interact key takes it, letting go is on its own button
@@ -991,6 +991,141 @@ namespace pce::UI
 			}
 		}
 
+		// The System page of the pause menu shows a picture of the GamePad with the controls of the moment (part pane
+		// Pa_AllTips_00, titled "Basic Controls", "Riding Controls", ...). It is hidden: the PC settings are drawn in its
+		// place (PCOverlay).
+		uint32 sAllTips = 0;
+		void SystemPanel(State& st)
+		{
+			if (!PaneOk(sAllTips) || ReadName(sAllTips) != "Pa_AllTips_00")
+			{
+				sAllTips = 0;
+				for (auto& [pane, ti] : sTexts)
+				{
+					if (ti.name.rfind("T_ControlTitle", 0) != 0 || !PaneOk(pane) || ReadName(pane) != ti.name)
+						continue;
+					for (uint32 p = memory_readU32(pane + kParent); p && PaneOk(p) && !sAllTips; p = memory_readU32(p + kParent))
+						if (ReadName(p) == "Pa_AllTips_00")
+							sAllTips = p;
+					if (sAllTips)
+						break;
+				}
+				if (!sAllTips)
+					return;
+			}
+			const uint32 parent = memory_readU32(sAllTips + kParent);
+			Rect r{};
+			if (!PaneOk(parent) || !Visible(parent) || !PaneRectImpl(sAllTips, r))
+				return;
+			const uint8 f = memory_readU8(sAllTips + kFlag);
+			if (f & 1)
+				memory_writeU8(sAllTips + kFlag, f & ~1);
+			if (r.x0 < -0.05f || r.x1 > 1.05f)
+				return; // another page is shown (the System page has slid off the screen)
+			st.systemPanel = true;
+			st.systemRect = r;
+		}
+
+		// "Ability Controls": the GamePad pictures of its pages (layout PaMessageTipsDrcImage_00: P_DrcImage_00, one node
+		// per button lit when the page uses it). The pictures are hidden every frame (the nodes are left as they are: the
+		// game decides which one is on), the buttons are kept for PCOverlay.
+		std::mutex sTipMutex;
+		std::vector<TipKeys> sTipKeys;
+		void TipPictures()
+		{
+			static const std::pair<const char*, uint16> kButtons[] = {
+				{"N_A_00", 0xE040}, {"N_B_00", 0xE041}, {"N_X_00", 0xE042}, {"N_Y_00", 0xE043}, {"N_L_00", 0xE044}, {"N_R_00", 0xE045},
+				{"N_ZL_00", 0xE046}, {"N_ZR_00", 0xE047}, {"N_Plus_00", 0xE04B}, {"N_Minus_00", 0xE04C},
+				{"N_Ue_00", 0xE060}, {"N_Sita_00", 0xE061}, {"N_Left_00", 0xE062}, {"N_Right_00", 0xE063}, {"N_Joge_00", 0xE064},
+				{"N_Juji_00", 0xE065}, {"N_Sayu_00", 0xE065},
+				{"N_Lstick_Up_00", 0xE052}, {"N_Lstick_Down_00", 0xE050}, {"N_Lstick_Left_00", 0xE05A}, {"N_Lstick_Right_00", 0xE058},
+				{"N_Lstick_UD_00", Prompts::kGlyphWS}, {"N_Lstick_LR_00", 0xE054}, {"N_Lstick_Push_00", 0xE056}, {"N_Lstick_00", 0xE05E},
+				{"N_Rstick_Up_00", 0xE053}, {"N_Rstick_Down_00", 0xE051}, {"N_Rstick_Left_00", 0xE05B}, {"N_Rstick_Right_00", 0xE059},
+				{"N_Rstick_UD_00", 0xE05D}, {"N_Rstick_LR_00", 0xE055}, {"N_Rstick_Push_00", 0xE057}, {"N_Rstick_00", 0xE05F},
+			};
+			std::vector<TipKeys> found;
+			auto it = sScreens.find("ControllerWindow_00");
+			if (it != sScreens.end() && ScreenShownObj(it->first, it->second) && ValidPtr(it->second, 0x40))
+			{
+				const uint32 lyt = memory_readU32(it->second + 0x18);
+				const uint32 root = ValidPtr(lyt, 0x10) ? memory_readU32(lyt + 0x0C) : 0;
+				std::vector<uint32> stack{root};
+				for (int guard = 0; !stack.empty() && guard < 20000; guard++)
+				{
+					const uint32 pane = stack.back();
+					stack.pop_back();
+					if (!PaneOk(pane))
+						continue;
+					if (ReadName(pane) == "P_DrcImage_00")
+					{
+						const uint32 part = memory_readU32(pane + kParent);
+						Rect r{};
+						if (!PaneOk(part) || !PaneRectImpl(pane, r))
+							continue;
+						TipKeys tk{r, {}};
+						const uint32 head = part + kChildHead;
+						for (uint32 node = memory_readU32(head), i = 0; node && node != head && i < 128; node = memory_readU32(node + kNext), i++)
+						{
+							if (!PaneOk(node))
+								break;
+							const std::string n = ReadName(node);
+							for (const auto& [bn, code] : kButtons)
+							{
+								if (n != bn)
+									continue;
+								if ((memory_readU8(node + kFlag) & 1) && memory_readU8(node + kFlag + 1) > 0)
+									tk.codes.push_back(code);
+								// its pictures off (the lit button, arrows); the node stays the game's
+								std::vector<uint32> sub{node};
+								for (int g = 0; !sub.empty() && g < 64; g++)
+								{
+									const uint32 q = sub.back();
+									sub.pop_back();
+									const uint32 h = q + kChildHead;
+									for (uint32 c = memory_readU32(h), k = 0; c && c != h && k < 32; c = memory_readU32(c + kNext), k++)
+									{
+										if (!PaneOk(c))
+											break;
+										const std::string cn = ReadName(c);
+										if (cn.rfind("P_", 0) == 0 || cn.rfind("W_", 0) == 0)
+										{
+											const uint8 f = memory_readU8(c + kFlag);
+											if (f & 1)
+												memory_writeU8(c + kFlag, f & ~1);
+										}
+										else
+											sub.push_back(c);
+									}
+								}
+							}
+						}
+						const uint8 f = memory_readU8(pane + kFlag);
+						if (f & 1)
+							memory_writeU8(pane + kFlag, f & ~1); // the picture of the GamePad
+						// the keys go in the picture's frame (the picture itself is a cut-out of the GamePad)
+						if (const uint32 frame = FindChildByPrefix(part, "W_Base_00"))
+						{
+							Rect fr{};
+							if (PaneRectImpl(frame, fr))
+								tk.rect = fr;
+						}
+						if (Visible(part) && r.x1 > 0.0f && r.x0 < 1.0f && r.y1 > 0.0f && r.y0 < 1.0f)
+							found.push_back(std::move(tk));
+						continue;
+					}
+					const uint32 head = pane + kChildHead;
+					for (uint32 node = memory_readU32(head), i = 0; node && node != head && i < 256; node = memory_readU32(node + kNext), i++)
+					{
+						if (!PaneOk(node))
+							break;
+						stack.push_back(node);
+					}
+				}
+			}
+			std::lock_guard lock(sTipMutex);
+			sTipKeys = std::move(found);
+		}
+
 		void Compute(State& st)
 		{
 			RebuildRoots();
@@ -1004,10 +1139,14 @@ namespace pce::UI
 			st.hud = ScreenVisible("MainScreen_00");
 			if (auto it = sScreens.find("MainScreen_00"); it != sScreens.end() && ValidPtr(it->second, 0x200))
 				st.anyMenu = (memory_readU32(it->second + 0x180) & 0x1A) != 0x1A;
+			if (st.inventory)
+				SystemPanel(st);
+			TipPictures();
 			for (auto& [name, obj] : sScreens)
 			{
 				if (name.rfind("SystemWindow", 0) == 0 || name.rfind("GameOver", 0) == 0 || name.rfind("ShopBtnList", 0) == 0 ||
-					name == "AppSystemWindow_00" || name == "OptionWindow_00" || name == "End_00")
+					name == "AppSystemWindow_00" || name == "OptionWindow_00" || name == "End_00" || name == "ControllerWindow_00" ||
+					name == "DLCWindow_00")
 				{
 					if (ScreenShownObj(name, obj))
 						st.dialog = true;
@@ -1021,7 +1160,7 @@ namespace pce::UI
 				// only the text boxes the state needs (cheap name test before the memory walks)
 				const std::string& nm = ti.name;
 				const bool relevant = nm.rfind("T_Guide", 0) == 0 || nm.rfind("T_A_", 0) == 0 || nm.rfind("T_B_", 0) == 0 ||
-									  nm.rfind("T_BX_", 0) == 0 || nm.rfind("T_Btn_", 0) == 0 || ti.text == "Place pin";
+									  nm.rfind("T_BX_", 0) == 0 || nm.rfind("T_Btn_", 0) == 0 || ti.text == "Place pin" || nm == "T_Name_00";
 				if (!relevant)
 					continue;
 				if (ti.text == "Place pin" && PaneOk(pane) && ReadName(pane) == ti.name && Visible(pane))
@@ -1029,6 +1168,16 @@ namespace pce::UI
 				if (!PaneOk(pane) || ReadName(pane) != ti.name || !Visible(pane))
 					continue;
 				const std::string& n = ti.name;
+				if (n == "T_Name_00")
+				{
+					std::string scr;
+					if (Visible(pane, &scr) && scr == "MainShortCut_00")
+					{
+						st.shortcut = true;
+						st.shortcutName = ti.text;
+					}
+					continue;
+				}
 				const bool placeholder = ti.text.size() >= 5 && ti.text.compare(ti.text.size() - 5, 5, "Guide") == 0; // "YGuide"
 				if (n.rfind("T_GuideA_", 0) == 0)
 				{
@@ -1390,6 +1539,12 @@ namespace pce::UI
 		return r;
 	}
 
+	std::vector<TipKeys> GetTipKeys()
+	{
+		std::lock_guard lock(sTipMutex);
+		return sTipKeys;
+	}
+
 	std::vector<HudPrompt> GetHudPrompts()
 	{
 		std::lock_guard lock(sHudMutex);
@@ -1425,6 +1580,22 @@ namespace pce::UI
 			sHudPrompts = std::move(sHudQueue.front().second);
 			sHudQueue.pop_front();
 		}
+	}
+
+	std::string PaneChain(const std::string& screen, const std::string& name)
+	{
+		std::lock_guard lock(sMutex);
+		std::string r;
+		for (auto& [pane, ti] : sTexts)
+		{
+			if (ti.name != name || !PaneOk(pane) || ReadName(pane) != name || ScreenOf(pane) != screen)
+				continue;
+			r += fmt::format("{:08x} '{}' alpha chain {:.2f} visible {}:", pane, ti.text, AlphaChain(pane, false), Visible(pane));
+			for (uint32 q = pane; PaneOk(q); q = memory_readU32(q + kParent))
+				r += fmt::format(" {} f={:02x} a={} g={}", ReadName(q), memory_readU8(q + kFlag), memory_readU8(q + kFlag + 1), memory_readU8(q + kFlag + 2));
+			r += "|";
+		}
+		return r;
 	}
 
 	std::string HudTrace(const std::string& cmd)
@@ -1511,6 +1682,36 @@ namespace pce::UI
 			return false;
 		memory_writeU32(inst + kLastPage, (uint32)page);
 		return true;
+	}
+
+	void SetBoxCursorHidden(bool hidden)
+	{
+		static uint32 sHiddenRoot = 0;
+		std::lock_guard lock(sMutex);
+		uint32 root = 0;
+		if (auto it = sScreens.find("BoxCursorTV"); it != sScreens.end() && ValidPtr(it->second, 0x40))
+		{
+			const uint32 lyt = memory_readU32(it->second + 0x18);
+			if (ValidPtr(lyt, 0x10))
+				root = memory_readU32(lyt + 0x0C);
+		}
+		if (!PaneOk(root))
+			root = 0;
+		if (hidden && root)
+		{
+			const uint8 f = memory_readU8(root + kFlag);
+			if (f & 1)
+			{
+				memory_writeU8(root + kFlag, f & ~1);
+				sHiddenRoot = root;
+			}
+		}
+		else if (!hidden && sHiddenRoot)
+		{
+			if (PaneOk(sHiddenRoot))
+				memory_writeU8(sHiddenRoot + kFlag, memory_readU8(sHiddenRoot + kFlag) | 1);
+			sHiddenRoot = 0;
+		}
 	}
 
 	bool SetMapOrigin(const PointerSnapshot& ps, float normX, float normY)
