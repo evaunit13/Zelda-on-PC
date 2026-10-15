@@ -50,8 +50,8 @@ HUD**, so the interface is drawn on top at full sharpness instead of being inter
 ### Mouse and keyboard, made for this game
 
 - **1:1 mouse camera.** Raw input, no acceleration, no smoothing. The mouse does not pretend to be an analog stick: the
-  game's camera code is patched to take the rotation directly, in the third person camera, on horseback, while aiming
-  the bow, in the scope, while climbing and in conversations.
+  game's camera code is patched to take the rotation directly, in the third person camera, with a target locked on, on
+  horseback, while aiming the bow, in the scope, in the camera rune, while climbing and in conversations.
 - **Every action rebindable**, two keys per action, with conflict highlighting.
 - **Weapons on the mouse wheel**, arrows while aiming. Hold `1` – `4` for the weapon, bow, shield and rune selectors.
   As an option (`Esc` → **Camera**), the movement keys step through an open selector and move the cursor in the
@@ -65,8 +65,8 @@ HUD**, so the interface is drawn on top at full sharpness instead of being inter
 ### Your keys on screen
 
 The game's button prompts show the key or mouse button that is bound to the action, and follow your rebinding. The
-glyphs are drawn for this project in the style of the game. The pages of **Ability Controls** (pause menu, System) show
-your keys where the game has pictures of the GamePad.
+glyphs are drawn for this project in the style of the game. The pages of **Ability Controls** (pause menu, System) and
+the game's tutorial tips show your keys where the game has pictures of the GamePad.
 
 <p align="center"><img src="docs/prompts.png" width="560" alt="Key and mouse prompt glyphs"></p>
 
@@ -91,9 +91,12 @@ your keys where the game has pictures of the GamePad.
 - **Aspect ratio:** 16:9, 16:10, 21:9 and 32:9, with the HUD at the edges of the screen or centred on ultrawide. An
   ultrawide main display is detected. New, and so far tried in a window only, not on an ultrawide display.
 - Inventory, map and Adventure Log open directly on their page (`Tab` / `I`, `M`, `J`).
-- **amiibo from files.** When the amiibo rune looks for an amiibo, a window lists your amiibo files (`.bin` dumps of
-  your figures, also the decrypted kind amiibo tools write); choose one and it is scanned. Files are added with **Add
-  amiibo File...** in that window or under `Esc` → **Game**. The rune itself is turned on in the game's Options.
+- **amiibo from files.** When the amiibo rune looks for an amiibo, the game's own window lists your amiibo files
+  (`.bin` dumps of your figures, also the decrypted kind amiibo tools write) where it shows a GamePad on a console;
+  choose one and it is scanned. Files are added with **Add amiibo File...** in that window or under `Esc` → **Game**.
+  The rune itself is turned on in the game's Options.
+- **Camera rune with the mouse:** click takes the picture, the wheel zooms, `Esc` (or right click) leaves; "Save in
+  album?" is answered with a click.
 - Loading screen tips that make no sense on a PC (aiming by tilting the GamePad, amiibo, Wolf Link) are left out.
 - **Language and units:** the text language is picked from the ones your copy of the game has, and the temperature
   can be shown in Celsius or Fahrenheit whatever the region of the game is.

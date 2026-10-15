@@ -64,6 +64,8 @@ namespace pce
 		void LatchHeldKeys();
 		// a popup of the PC layer (amiibo) is open over the game: it has keyboard, wheel and a free cursor
 		void SetPopupOpen(bool open);
+		// the game's buttons (VPAD mask) held for some frames, from the PC layer (e.g. cancel when its popup is closed)
+		void PressGameButtons(uint32 mask, int frames);
 
 		// dev bridge: a raw mouse movement as if it came from the device (goes through the same path as real input)
 		void DebugRawMouse(sint32 dx, sint32 dy);

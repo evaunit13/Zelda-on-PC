@@ -86,6 +86,8 @@ namespace pce::Input
 		std::atomic<bool> sEmbedFocus{false};   // the PC settings in the System page have the keyboard
 		std::atomic<bool> sPanelHover{false};   // the mouse is over them
 		std::atomic<bool> sPopupOpen{false};    // a popup of the PC layer is open (amiibo)
+		std::atomic<uint32> sPressMask{0};      // PressGameButtons
+		std::atomic<int> sPressFrames{0};
 		std::atomic<bool> sSystemMenuRequest{false};
 		std::array<std::atomic<bool>, 256> sKeyLatched{};
 		std::mutex sPanelMutex;
@@ -467,6 +469,35 @@ namespace pce::Input
 			return r;
 		}
 
+		// Camera rune (the Sheikah Slate's camera). Its own camera class, update 0x02BCED3C (r3 = camera), called from the
+		// camera manager: the chase camera hooks do not run and the mouse went through right stick emulation. U-King v1.5.0:
+		// pitch at +0x28 (degrees, stick up lowers it, the game limits it to -70..75), added to before the update runs; the
+		// yaw is the angle the update turns by the stick (0x02BCF698: f1 = stick x * rate + current yaw, degrees, stick
+		// right lowers it), hooked like the aim cameras (PCE_AimYawAbs). Zoom (field of view at +0x54) is on the d-pad.
+		// A zoomed camera: the aiming sensitivity applies, as for the scope.
+		std::atomic<uint32> sRuneCamFrame{0xF0000000};
+
+		void HLE_RuneCamTick(PPCInterpreter_t* hCPU)
+		{
+			const uint32 cam = hCPU->gpr[3];
+			const uint32 frame = sDebug.frameCounter.load();
+			sRuneCamFrame = frame;
+			sScopeTickFrame = frame;
+			sAimTickFrame = frame;
+			sCamTickFrame = frame;
+			sDebug.cameraObject = cam;
+			const double pitch = TakePending(sPendingPitch, sPitchAge);
+			if (pitch != 0.0 && memory_isAddressRangeAccessible(cam + 0x28, 4))
+				memory_writeFloat(cam + 0x28, memory_readFloat(cam + 0x28) + (float)(kGamePitchSign * pitch));
+			{
+				// drop mouse rotation the camera did not take (the yaw is taken only while the stick is deflected)
+				std::lock_guard lock(sCamMutex);
+				if (++sYawAge > 2)
+					sPendingYaw = 0.0;
+			}
+			hCPU->instructionPointer = hCPU->spr.LR;
+		}
+
 		double Wrap180(double a)
 		{
 			a = fmod(a + 180.0, 360.0);
@@ -511,6 +542,29 @@ namespace pce::Input
 		// game limits the pitch to -40..60. The negligible stick deflection of the direct camera keeps the camera from
 		// swinging back behind the horse, as a touch of the stick does (+0x28: time left of manual control).
 		std::atomic<uint32> sHorseCamFrame{0xF0000000};
+
+		// turns the eye of a camera's pose ([[camera+0x10]]) around its look-at point by the mouse rotation (degrees,
+		// right / up positive), the pitch of the eye kept within the limits
+		void TurnEye(uint32 cam, double yaw, double pitch, double minPitch, double maxPitch)
+		{
+			const uint32 holder = memory_isAddressRangeAccessible(cam + 0x10, 4) ? memory_readU32(cam + 0x10) : 0;
+			const uint32 pose = holder && memory_isAddressRangeAccessible(holder, 4) ? memory_readU32(holder) : 0;
+			if ((yaw == 0.0 && pitch == 0.0) || !pose || !memory_isAddressRangeAccessible(pose + 0x550, 0x18))
+				return;
+			const double ex = memory_readFloat(pose + 0x550), ey = memory_readFloat(pose + 0x554), ez = memory_readFloat(pose + 0x558);
+			const double ax = memory_readFloat(pose + 0x55C), ay = memory_readFloat(pose + 0x560), az = memory_readFloat(pose + 0x564);
+			const double dx = ex - ax, dy = ey - ay, dz = ez - az;
+			const double dist = sqrt(dx * dx + dy * dy + dz * dz);
+			if (!std::isfinite(dist) || dist <= 0.1 || dist >= 100.0)
+				return;
+			constexpr double kDeg = 3.14159265358979323846 / 180.0;
+			const double y = atan2(dx, dz) + kGameYawSign * yaw * kDeg;
+			const double p = std::clamp(asin(std::clamp(dy / dist, -1.0, 1.0)) / kDeg + kGamePitchSign * pitch, minPitch, maxPitch) * kDeg;
+			memory_writeFloat(pose + 0x550, (float)(ax + dist * cos(p) * sin(y)));
+			memory_writeFloat(pose + 0x554, (float)(ay + dist * sin(p)));
+			memory_writeFloat(pose + 0x558, (float)(az + dist * cos(p) * cos(y)));
+		}
+
 		void HLE_HorseCamTick(PPCInterpreter_t* hCPU)
 		{
 			const uint32 cam = hCPU->gpr[3];
@@ -518,24 +572,7 @@ namespace pce::Input
 			sCamTickFrame = sDebug.frameCounter.load();
 			const double yaw = TakePending(sPendingYaw, sYawAge);
 			const double pitch = TakePending(sPendingPitch, sPitchAge);
-			const uint32 holder = memory_isAddressRangeAccessible(cam + 0x10, 4) ? memory_readU32(cam + 0x10) : 0;
-			const uint32 pose = holder && memory_isAddressRangeAccessible(holder, 4) ? memory_readU32(holder) : 0;
-			if ((yaw != 0.0 || pitch != 0.0) && pose && memory_isAddressRangeAccessible(pose + 0x550, 0x18))
-			{
-				const double ex = memory_readFloat(pose + 0x550), ey = memory_readFloat(pose + 0x554), ez = memory_readFloat(pose + 0x558);
-				const double ax = memory_readFloat(pose + 0x55C), ay = memory_readFloat(pose + 0x560), az = memory_readFloat(pose + 0x564);
-				const double dx = ex - ax, dy = ey - ay, dz = ez - az;
-				const double dist = sqrt(dx * dx + dy * dy + dz * dz);
-				if (std::isfinite(dist) && dist > 0.1 && dist < 100.0)
-				{
-					constexpr double kDeg = 3.14159265358979323846 / 180.0;
-					const double y = atan2(dx, dz) + kGameYawSign * yaw * kDeg;
-					const double p = std::clamp(asin(std::clamp(dy / dist, -1.0, 1.0)) / kDeg + kGamePitchSign * pitch, -40.0, 60.0) * kDeg;
-					memory_writeFloat(pose + 0x550, (float)(ax + dist * cos(p) * sin(y)));
-					memory_writeFloat(pose + 0x554, (float)(ay + dist * sin(p)));
-					memory_writeFloat(pose + 0x558, (float)(az + dist * cos(p) * cos(y)));
-				}
-			}
+			TurnEye(cam, yaw, pitch, -40.0, 60.0);
 			hCPU->instructionPointer = hCPU->spr.LR;
 		}
 
@@ -643,6 +680,36 @@ namespace pce::Input
 		}
 
 		// start of the camera's update: r3 = pose of the camera (0 if it has none), r4 = camera
+		// Lock-on camera (a target held with the lock-on button: an enemy, a person). It is the class of the Magnesis camera
+		// (update 0x02BF0234, r3 = camera), called from the camera manager instead of the chase camera, so the mouse went
+		// through right stick emulation. Yaw at +0xAC, pitch at +0xA8: the direction of the eye from the look-at point
+		// (degrees, stick right / up lower them, they stay where the stick leaves them), and the camera eases its eye towards
+		// them over ~8 frames. So both are turned: the angles, and the eye around the look-at point (as on horseback), the
+		// easing has nothing left to do. With Magnesis the rune's own handling turns this camera (HLE_MagnetCamTick).
+		std::atomic<uint32> sLockCamFrame{0xF0000000};
+
+		void HLE_LockCamTick(PPCInterpreter_t* hCPU)
+		{
+			const uint32 cam = hCPU->gpr[3];
+			const uint32 frame = sDebug.frameCounter.load();
+			if (frame - sMagnetFrame.load() <= 2)
+			{
+				hCPU->instructionPointer = hCPU->spr.LR;
+				return;
+			}
+			sLockCamFrame = frame;
+			sCamTickFrame = frame;
+			const double yaw = TakePending(sPendingYaw, sYawAge);
+			const double pitch = TakePending(sPendingPitch, sPitchAge);
+			if ((yaw != 0.0 || pitch != 0.0) && memory_isAddressRangeAccessible(cam, 0xB0))
+			{
+				memory_writeFloat(cam + 0xAC, (float)Wrap180(memory_readFloat(cam + 0xAC) + kGameYawSign * yaw));
+				memory_writeFloat(cam + 0xA8, std::clamp(memory_readFloat(cam + 0xA8) + (float)(kGamePitchSign * pitch), -80.0f, 80.0f));
+				TurnEye(cam, yaw, pitch, -80.0, 80.0);
+			}
+			hCPU->instructionPointer = hCPU->spr.LR;
+		}
+
 		void HLE_MagnetCamTick(PPCInterpreter_t* hCPU)
 		{
 			const uint32 pose = hCPU->gpr[3], cam = hCPU->gpr[4];
@@ -960,6 +1027,8 @@ namespace pce::Input
 		osLib_addFunction("coreinit", "PCE_AimYaw", HLE_AimYaw);
 		osLib_addFunction("coreinit", "PCE_AimYawAbs", HLE_AimYawAbs);
 		osLib_addFunction("coreinit", "PCE_AimPitch", HLE_AimPitch);
+		osLib_addFunction("coreinit", "PCE_RuneCamTick", HLE_RuneCamTick);
+		osLib_addFunction("coreinit", "PCE_LockCamTick", HLE_LockCamTick);
 	}
 
 	void Start()
@@ -1065,6 +1134,12 @@ namespace pce::Input
 		sSystemMenuRequest = true;
 	}
 
+	void PressGameButtons(uint32 mask, int frames)
+	{
+		sPressMask = mask;
+		sPressFrames = frames;
+	}
+
 	void SetPopupOpen(bool open)
 	{
 		if (sPopupOpen.exchange(open) != open)
@@ -1138,9 +1213,10 @@ namespace pce::Input
 	std::string CameraAges()
 	{
 		const uint32 f = sDebug.frameCounter.load();
-		return fmt::format("cam {} aim {} scope {} glide {} climbcam {} talkcam {} magnet {} horsecam {}", f - sCamTickFrame.load(),
+		return fmt::format("cam {} aim {} scope {} glide {} climbcam {} talkcam {} magnet {} horsecam {} runecam {} lockcam {}", f - sCamTickFrame.load(),
 						   f - sAimTickFrame.load(), f - sScopeTickFrame.load(), f - sGlideTickFrame.load(), f - sClimbCamFrame.load(),
-						   f - sTalkCamFrame.load(), f - sMagnetFrame.load(), f - sHorseCamFrame.load());
+						   f - sTalkCamFrame.load(), f - sMagnetFrame.load(), f - sHorseCamFrame.load(), f - sRuneCamFrame.load(),
+						   f - sLockCamFrame.load());
 	}
 
 	void NoteVPADCaller(uint32 lr, uint32 length)
@@ -1298,7 +1374,7 @@ namespace pce::Input
 		mio.wheel = wheel;
 		Menus::Update(ui, mio);
 		sPointerMode = mio.pointerMode;
-		const bool gameMenu = mio.pointerMode || ui.scope || ui.anyMenu || ui.inventory || ui.map;
+		const bool gameMenu = mio.pointerMode || ui.scope || ui.cameraRune || ui.anyMenu || ui.inventory || ui.map;
 		// Esc acts as Back in game menus; on the title screen's main menu it opens the PC settings
 		const bool escIsBack = gameMenu && !(ui.title && !ui.dialog);
 		sGameMenuOpen = escIsBack;
@@ -1469,6 +1545,11 @@ namespace pce::Input
 		if (down(Action::Map)) hold |= VPAD_MINUS;
 		hold |= sDebug.overrideButtons.load();
 		hold |= mio.holdAdd;
+		if (sPressFrames.load() > 0)
+		{
+			hold |= sPressMask.load();
+			sPressFrames--;
+		}
 
 		// pause menu pages: I always lands on the inventory, J on the adventure log (quests)
 		if (inputEnabled || sDebug.overrideKeysAction.load())
@@ -1608,6 +1689,21 @@ namespace pce::Input
 				{
 					if (down(Action::Attack)) remap(Action::Attack, VPAD_Y, VPAD_A);   // place pin
 					if (down(Action::Bow)) remap(Action::Bow, VPAD_ZR, VPAD_B);     // quit scope
+				}
+				if (ui.cameraRune)
+				{
+					// the keys its prompts show: click = Capture, Esc (above) / right click = Quit, wheel = Zoom (d-pad up /
+					// down, held a few frames per notch: 60 frames zoom all the way)
+					if (down(Action::Attack)) remap(Action::Attack, VPAD_Y, VPAD_A);
+					if (down(Action::Bow)) remap(Action::Bow, VPAD_ZR, VPAD_B);
+					if (wheel != 0)
+					{
+						const uint32 button = wheel > 0 ? VPAD_UP : VPAD_DOWN;
+						if (fs.pushPullButton != button)
+							fs.pushPullFrames = 0;
+						fs.pushPullButton = button;
+						fs.pushPullFrames = std::min(60, fs.pushPullFrames + 5 * std::abs(wheel));
+					}
 				}
 			}
 			else

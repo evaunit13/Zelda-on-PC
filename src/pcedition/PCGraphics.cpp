@@ -212,6 +212,34 @@ fadds f1, f1, f0
 fadds f23, f23, f1
 blr
 
+; lock-on camera (a target held with the lock-on button; the class of the Magnesis camera): its update (0x02BF0234,
+; r3 = camera) keeps yaw / pitch in degrees at +0xAC / +0xA8, the mouse rotation is added before the update runs
+_pceLockCamEntry:
+mflr r0
+bl import.coreinit.PCE_LockCamTick
+mtlr r0
+stwu r1, -0x220(r1)
+b 0x02BF0238
+
+; camera rune (the Sheikah Slate's camera): its update (0x02BCED3C, r3 = camera) keeps the pitch in degrees at +0x28, the
+; mouse pitch is added before the update runs
+_pceRuneCamEntry:
+mflr r0
+bl import.coreinit.PCE_RuneCamTick
+mtlr r0
+stwu r1, -0x1f8(r1)
+b 0x02BCED40
+
+; ... and its yaw: f1 = stick x (f31) * rate (f27) + current yaw (f12), degrees; r11 and f2 are free (a call follows)
+_pceRuneCamYaw:
+fmuls f1, f31, f27
+fmr f2, f12
+mflr r11
+bl import.coreinit.PCE_AimYawAbs
+mtlr r11
+fadds f1, f12, f1
+blr
+
 ; ---- the two aim cameras: 0x02B9250C is the zoomed one (scope, bow drawn: "Scope" below), 0x02B94E30 the one of the
 ; runes that are aimed (Magnesis, Stasis, Cryonis: "Bow" below, named before a bow could be tested) ----
 _pceScopeEntry:
@@ -265,6 +293,9 @@ lfs f2, 0x134(r31)
 fadds f1, f2, f1
 blr
 
+0x02BCED3C = b _pceRuneCamEntry
+0x02BF0234 = b _pceLockCamEntry
+0x02BCF698 = bla _pceRuneCamYaw
 0x02B9250C = b _pceScopeEntry
 0x02B94E30 = b _pceBowEntry
 0x02B92848 = bla _pceScopePitch

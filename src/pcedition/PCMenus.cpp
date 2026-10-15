@@ -363,7 +363,7 @@ namespace pce::Menus
 	void Update(const UI::State& st, FrameIO& io)
 	{
 		UpdatePages(st, io);
-		bool pointerScreen = UI::PointerScreenShown(st) && !st.scope;
+		bool pointerScreen = UI::PointerScreenShown(st) && !st.scope && !st.cameraRune;
 		if (pointerScreen)
 		{
 			// only when the screen really offers something to point at (no cursor for a stale "shown" flag)

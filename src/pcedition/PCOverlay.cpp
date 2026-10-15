@@ -1414,7 +1414,18 @@ namespace pce::Overlay
 				sAmiiboError = err == NFC_TOUCH_TAG_ERROR_NO_ACCESS ? "This file cannot be opened." : "This file is not an amiibo.";
 		}
 
-		// returns true while the popup is shown (it has the input then)
+		// The game's "Use amiibo" window (amiibo rune) is cancelled with its own button: after the choice was closed, the cancel
+		// reaches the game too, so one press of Esc leaves both.
+		void CancelAmiibo()
+		{
+			CloseAmiibo(true);
+			Input::PressGameButtons(0x4000 /* B */, 4);
+		}
+
+		double sAmiiboWaitSince = 0.0; // when the game began to look for an amiibo
+		bool sAmiiboFrameSeen = false; // the game's "Use amiibo" window was there since (the choice follows it)
+
+		// returns true while the choice is shown (it has the input then)
 		bool RenderAmiibo(double now)
 		{
 			const bool waiting = nnNfp_isWaitingForTag();
@@ -1423,9 +1434,27 @@ namespace pce::Overlay
 				if (sAmiiboOpen)
 					CloseAmiibo(false);
 				sAmiiboDismissed = false;
+				sAmiiboWaitSince = 0.0;
+				sAmiiboFrameSeen = false;
 				return false;
 			}
-			if (!sAmiiboOpen && !sAmiiboDismissed && !sOpen.load() && sFonts.item)
+			if (sAmiiboWaitSince == 0.0)
+				sAmiiboWaitSince = now;
+			UI::Rect frame{};
+			const bool inFrame = UI::GetAmiiboFrame(frame);
+			// The choice comes and goes with the game's window. (The game keeps looking while the rune is held up after
+			// the window was cancelled; the window comes back with the rune key.) Should the window never be found, the
+			// choice is a box of its own after a moment.
+			if (inFrame)
+				sAmiiboFrameSeen = true;
+			else if (sAmiiboFrameSeen)
+			{
+				if (sAmiiboOpen)
+					CloseAmiibo(false);
+				sAmiiboDismissed = false;
+				return false;
+			}
+			if (!sAmiiboOpen && !sAmiiboDismissed && !sOpen.load() && sFonts.item && (inFrame || now - sAmiiboWaitSince > 1.5))
 			{
 				sAmiiboOpen = true;
 				RefreshAmiiboFiles();
@@ -1449,11 +1478,9 @@ namespace pce::Overlay
 			}
 			ImGuiIO& io = ImGui::GetIO();
 			ImDrawList* dl = ImGui::GetForegroundDrawList();
-			const float W = io.DisplaySize.x, H = io.DisplaySize.y, fs = (float)sFonts.height;
+			const float W = io.DisplaySize.x, H = io.DisplaySize.y;
 			const int count = (int)sAmiiboFiles.size();
 			const bool dialog = sAmiiboDialog.load();
-			// actions of the bottom row
-			enum { kAdd = -2, kFolder = -3, kCancel = -4 };
 			std::optional<Key> k;
 			while ((k = Input::PopKeyPress()))
 			{
@@ -1461,7 +1488,7 @@ namespace pce::Overlay
 					continue;
 				if (*k == Key::Escape || *k == Key::Backspace)
 				{
-					CloseAmiibo(true);
+					CancelAmiibo();
 					return false;
 				}
 				if ((*k == Key::Up || *k == KeyChar('W')) && count)
@@ -1478,25 +1505,51 @@ namespace pce::Overlay
 				if (!sAmiiboOpen)
 					return false;
 			}
-			Input::PopOverlayWheel();
+			const int wheel = Input::PopOverlayWheel();
+			if (wheel && count)
+				sAmiiboSel = std::clamp(sAmiiboSel - wheel, 0, count - 1);
 
-			const float rowH = fs * 1.6f;
-			const int shown = std::clamp(count, 1, 8);
-			const float bw = std::max(fs * 24.0f, W * 0.34f), bh = fs * 6.4f + rowH * shown;
-			// (below the game's own "Touch an amiibo" window)
-			const ImVec2 b0((W - bw) * 0.5f, std::min(H * 0.6f, H - bh - fs)), b1(b0.x + bw, b0.y + bh);
-			dl->AddRectFilled(b0, b1, IM_COL32(8, 10, 12, 235));
-			dl->AddRect(b0, b1, kBorder, 0, 0, 1.5f);
-			dl->AddRect(ImVec2(b0.x + 5, b0.y + 5), ImVec2(b1.x - 5, b1.y - 5), (kBorder & 0x00FFFFFF) | (80u << 24), 0, 0, 1.0f);
-			TextAligned(dl, sFonts.title, fs * 1.2f, ImVec2(b0.x + fs * 1.2f, b0.y + fs * 0.7f), kAccent, "amiibo");
-			TextAligned(dl, sFonts.small, fs * 0.72f, ImVec2(b1.x - fs * 1.0f, b0.y + fs * 1.0f), kTextDim, "Enter: Scan    Esc: Close", 1.0f);
-			TextAligned(dl, sFonts.small, fs * 0.8f, ImVec2(b0.x + fs * 1.2f, b0.y + fs * 2.3f), kTextDim,
-						dialog ? "Choose the file in the window that opened." : (count ? "Choose an amiibo to scan." : "No amiibo files yet: add the .bin file of one."));
-			const bool clicked = io.MouseDown[0] && !sMouseWasDown && !dialog;
-			float y = b0.y + fs * 3.4f;
-			for (int i = 0; i < count && i < 8; i++)
+			// where: the frame of the game's picture (in the picture, which has bars in a window of another shape), or a box
+			ImRect area;
+			float fs = (float)sFonts.height;
+			if (inFrame)
 			{
-				const ImRect r(ImVec2(b0.x + fs * 0.8f, y), ImVec2(b1.x - fs * 0.8f, y + rowH * 0.9f));
+				float X = 0.0f, Y = 0.0f, PW = W, PH = H;
+				int px, py, pw, ph, ww, wh;
+				if (Graphics::GetPictureArea(px, py, pw, ph, ww, wh))
+				{
+					const float kx = W / (float)ww, ky = H / (float)wh;
+					X = px * kx;
+					Y = py * ky;
+					PW = pw * kx;
+					PH = ph * ky;
+				}
+				area = ImRect(ImVec2(X + frame.x0 * PW, Y + frame.y0 * PH), ImVec2(X + frame.x1 * PW, Y + frame.y1 * PH));
+				fs = std::min(fs, area.GetHeight() / 6.2f);
+			}
+			else
+			{
+				const float bw = std::max(fs * 24.0f, W * 0.34f), bh = fs * 7.0f + fs * 1.5f * 3;
+				area = ImRect(ImVec2((W - bw) * 0.5f, std::min(H * 0.6f, H - bh - fs)), ImVec2((W + bw) * 0.5f, std::min(H * 0.6f, H - bh - fs) + bh));
+				dl->AddRectFilled(area.Min, area.Max, IM_COL32(8, 10, 12, 235));
+				dl->AddRect(area.Min, area.Max, kBorder, 0, 0, 1.5f);
+			}
+			const float pad = fs * 0.6f;
+			const bool clicked = io.MouseDown[0] && !sMouseWasDown && !dialog;
+			// line above the list
+			const char* head = dialog ? "Choose the file in the window that opened." : (count ? "Choose an amiibo:" : "No amiibo files yet: add the .bin file of one.");
+			TextAligned(dl, sFonts.small, fs * 0.8f, ImVec2(area.Min.x + pad, area.Min.y + pad * 0.7f), kTextDim, head);
+			// rows (as many as fit, scrolled to the selection)
+			const float rowH = fs * 1.45f;
+			const float listTop = area.Min.y + pad * 0.7f + fs * 1.15f;
+			const float btnH = fs * 1.3f;
+			const float listBottom = area.Max.y - pad - btnH - (sAmiiboError.empty() ? 0.0f : fs * 0.9f) - fs * 0.3f;
+			const int fit = std::max(1, (int)((listBottom - listTop) / rowH));
+			const int first = std::clamp(sAmiiboSel - fit + 1, 0, std::max(0, count - fit));
+			for (int i = first; i < count && i < first + fit; i++)
+			{
+				const float y = listTop + (i - first) * rowH;
+				const ImRect r(ImVec2(area.Min.x + pad, y), ImVec2(area.Max.x - pad, y + rowH * 0.88f));
 				const bool hover = r.Contains(io.MousePos) && !dialog;
 				if (hover && (io.MouseDelta.x != 0 || io.MouseDelta.y != 0 || clicked))
 					sAmiiboSel = i;
@@ -1505,31 +1558,36 @@ namespace pce::Overlay
 					dl->AddRectFilled(r.Min, r.Max, IM_COL32(248, 200, 0, 22));
 					dl->AddRect(r.Min, r.Max, (kAccent & 0x00FFFFFF) | (215u << 24), 2.0f, 0, 1.5f);
 				}
-				TextAligned(dl, sFonts.item, fs, ImVec2(r.Min.x + fs * 0.6f, y + (rowH * 0.9f - fs) * 0.5f), i == sAmiiboSel ? kText : kTextDim,
+				dl->PushClipRect(r.Min, r.Max, true);
+				TextAligned(dl, sFonts.item, fs, ImVec2(r.Min.x + fs * 0.5f, y + (rowH * 0.88f - fs) * 0.5f), i == sAmiiboSel ? kText : kTextDim,
 							_pathToUtf8(sAmiiboFiles[i].stem()));
+				dl->PopClipRect();
 				if (hover && clicked)
 				{
 					TouchAmiibo(i);
 					if (!sAmiiboOpen)
 						return false;
 				}
-				y += rowH;
 			}
+			if (count > fit)
+				TextAligned(dl, sFonts.small, fs * 0.7f, ImVec2(area.Max.x - pad, listTop - fs * 1.05f), kTextDim,
+							fmt::format("{} / {}", sAmiiboSel + 1, count), 1.0f);
 			if (!sAmiiboError.empty())
-				TextAligned(dl, sFonts.small, fs * 0.8f, ImVec2(b0.x + fs * 1.2f, b1.y - fs * 2.9f), kWarn, sAmiiboError);
+				TextAligned(dl, sFonts.small, fs * 0.8f, ImVec2(area.Min.x + pad, area.Max.y - pad - btnH - fs * 0.9f), kWarn, sAmiiboError);
 			// buttons
+			enum { kAdd, kFolder, kCancel };
 			struct Btn { const char* label; int id; };
 			const Btn btns[] = {{"Add amiibo File...", kAdd}, {"Open Folder", kFolder}, {"Cancel", kCancel}};
-			float bx = b0.x + fs * 1.0f;
-			const float by = b1.y - fs * 1.8f;
+			float bx = area.Min.x + pad;
+			const float by = area.Max.y - pad - btnH;
 			for (const Btn& btn : btns)
 			{
-				const ImVec2 ts = sFonts.small->CalcTextSizeA(fs * 0.85f, FLT_MAX, 0, btn.label);
-				const ImRect r(ImVec2(bx, by - fs * 0.2f), ImVec2(bx + ts.x + fs * 1.2f, by + ts.y + fs * 0.25f));
+				const ImVec2 ts = sFonts.small->CalcTextSizeA(fs * 0.8f, FLT_MAX, 0, btn.label);
+				const ImRect r(ImVec2(bx, by), ImVec2(bx + ts.x + fs * 1.1f, by + btnH));
 				const bool hover = r.Contains(io.MousePos) && !dialog;
 				dl->AddRectFilled(r.Min, r.Max, hover ? IM_COL32(248, 200, 0, 40) : IM_COL32(255, 255, 255, 14), fs * 0.15f);
 				dl->AddRect(r.Min, r.Max, hover ? kAccent : (kBorder & 0x00FFFFFF) | (110u << 24), fs * 0.15f, 0, 1.0f);
-				dl->AddText(sFonts.small, fs * 0.85f, ImVec2(bx + fs * 0.6f, by), hover ? kText : kTextDim, btn.label);
+				dl->AddText(sFonts.small, fs * 0.8f, ImVec2(bx + fs * 0.55f, by + (btnH - ts.y) * 0.5f), hover ? kText : kTextDim, btn.label);
 				if (hover && clicked)
 				{
 					if (btn.id == kAdd)
@@ -1538,12 +1596,12 @@ namespace pce::Overlay
 						OpenAmiiboFolder();
 					else
 					{
-						CloseAmiibo(true);
+						CancelAmiibo();
 						sMouseWasDown = io.MouseDown[0];
 						return false;
 					}
 				}
-				bx = r.Max.x + fs * 0.6f;
+				bx = r.Max.x + fs * 0.5f;
 			}
 			sMouseWasDown = io.MouseDown[0];
 			return true;

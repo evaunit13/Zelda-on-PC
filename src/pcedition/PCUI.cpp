@@ -1031,6 +1031,32 @@ namespace pce::UI
 		// game decides which one is on), the buttons are kept for PCOverlay.
 		std::mutex sTipMutex;
 		std::vector<TipKeys> sTipKeys;
+		bool sAmiiboFrameShown = false;
+		Rect sAmiiboFrame{};
+
+		void HidePane(uint32 p)
+		{
+			if (!PaneOk(p))
+				return;
+			const uint8 f = memory_readU8(p + kFlag);
+			if (f & 1)
+				memory_writeU8(p + kFlag, f & ~1);
+		}
+
+		uint32 FindChildNamed(uint32 parent, const std::string& name)
+		{
+			if (!PaneOk(parent))
+				return 0;
+			const uint32 head = parent + kChildHead;
+			for (uint32 node = memory_readU32(head), i = 0; node && node != head && i < 256; node = memory_readU32(node + kNext), i++)
+			{
+				if (!PaneOk(node))
+					break;
+				if (ReadName(node) == name)
+					return node;
+			}
+			return 0;
+		}
 		void TipPictures()
 		{
 			static const std::pair<const char*, uint16> kButtons[] = {
@@ -1044,7 +1070,12 @@ namespace pce::UI
 				{"N_Rstick_UD_00", 0xE05D}, {"N_Rstick_LR_00", 0xE055}, {"N_Rstick_Push_00", 0xE057}, {"N_Rstick_00", 0xE05F},
 			};
 			std::vector<TipKeys> found;
-			auto it = sScreens.find("ControllerWindow_00");
+			bool amiiboShown = false;
+			Rect amiiboFrame{};
+			// Ability Controls (pause menu) and the tips of the game (tutorials during play, "Use amiibo")
+			for (const char* screen : {"ControllerWindow_00", "MessageTips_00"})
+			{
+			auto it = sScreens.find(screen);
 			if (it != sScreens.end() && ScreenShownObj(it->first, it->second) && ValidPtr(it->second, 0x40))
 			{
 				const uint32 lyt = memory_readU32(it->second + 0x18);
@@ -1056,6 +1087,26 @@ namespace pce::UI
 					stack.pop_back();
 					if (!PaneOk(pane))
 						continue;
+					if (ReadName(pane) == "P_amiiboDRC_00")
+					{
+						// "Use amiibo": the GamePad, the arrow to its NFC touchpoint and the text asking to touch an amiibo
+						// to it go; the frame stays (the choice of amiibo files is drawn in it)
+						const uint32 part = memory_readU32(pane + kParent);
+						HidePane(pane);
+						if (PaneOk(part))
+						{
+							HidePane(FindChildNamed(part, "N_ArrowPos_00"));
+							HidePane(FindChildNamed(memory_readU32(part + kParent), "T_Msg_00"));
+							Rect fr{};
+							const uint32 frame = FindChildNamed(part, "W_Base_02");
+							if (Visible(part) && ((frame && PaneRectImpl(frame, fr)) || PaneRectImpl(pane, fr)))
+							{
+								amiiboShown = true;
+								amiiboFrame = fr;
+							}
+						}
+						continue;
+					}
 					if (ReadName(pane) == "P_DrcImage_00")
 					{
 						const uint32 part = memory_readU32(pane + kParent);
@@ -1122,8 +1173,11 @@ namespace pce::UI
 					}
 				}
 			}
+			}
 			std::lock_guard lock(sTipMutex);
 			sTipKeys = std::move(found);
+			sAmiiboFrameShown = amiiboShown;
+			sAmiiboFrame = amiiboFrame;
 		}
 
 		void Compute(State& st)
@@ -1137,6 +1191,7 @@ namespace pce::UI
 			st.map = ScreenVisible("AppHome_00");
 			st.title = ScreenVisible("Title_00");
 			st.hud = ScreenVisible("MainScreen_00");
+			st.cameraRune = ScreenVisible("AppCamera_00");
 			if (auto it = sScreens.find("MainScreen_00"); it != sScreens.end() && ValidPtr(it->second, 0x200))
 				st.anyMenu = (memory_readU32(it->second + 0x180) & 0x1A) != 0x1A;
 			if (st.inventory)
@@ -1226,6 +1281,12 @@ namespace pce::UI
 					if (!st.choice && ScreenOf(pane).rfind("Message", 0) == 0)
 						st.choice = true;
 				}
+			}
+			// the camera rune's view: not while it asks about a picture ("Save in album?": Save / Delete, a menu then)
+			if (st.cameraRune && !st.buttons.empty())
+			{
+				st.cameraRune = false;
+				st.cameraDialog = true;
 			}
 		}
 	}
@@ -1539,6 +1600,13 @@ namespace pce::UI
 		return r;
 	}
 
+	bool GetAmiiboFrame(Rect& r)
+	{
+		std::lock_guard lock(sTipMutex);
+		r = sAmiiboFrame;
+		return sAmiiboFrameShown;
+	}
+
 	std::vector<TipKeys> GetTipKeys()
 	{
 		std::lock_guard lock(sTipMutex);
@@ -1843,7 +1911,7 @@ namespace pce::UI
 
 	bool PointerScreenShown(const State& st)
 	{
-		return st.title || st.inventory || st.map || st.dialog || st.choice;
+		return st.title || st.inventory || st.map || st.dialog || st.choice || st.cameraDialog;
 	}
 
 	uint32 BtnToVPAD(Btn b)

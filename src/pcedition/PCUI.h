@@ -51,6 +51,8 @@ namespace pce::UI
 		bool dialog = false;       // system window / game over / other modal screen
 		bool choice = false;       // a conversation shows its answer buttons (message dialog)
 		bool scope = false;        // scope / camera view (guides "Place pin" / "Quit")
+		bool cameraRune = false;   // the Sheikah Slate's camera (AppCamera_00) looking: Capture, Zoom, Album, Self-Portrait, Quit
+		bool cameraDialog = false; // ... asking about the picture just taken ("Save in album?": Save / Delete, pointer)
 		bool anyMenu = false;      // gameplay HUD is suspended by a menu
 		bool hud = false;          // gameplay HUD screen is shown (hidden in cutscenes / events)
 		std::vector<Action> actions;      // visible context actions (guides, do-command diamond)
@@ -134,6 +136,9 @@ namespace pce::UI
 		std::vector<uint16> codes;
 	};
 	std::vector<TipKeys> GetTipKeys();
+	// "Use amiibo" (the amiibo rune): the frame of the game's picture of the GamePad with its NFC touchpoint (hidden, and
+	// the text asking to touch an amiibo to it); PCOverlay puts the choice of amiibo files there. False when not shown.
+	bool GetAmiiboFrame(Rect& r);
 	// frame synchronisation of the HUD prompts: the game finished a frame (CPU thread, GX2CopyColorBufferToScanBuffer of
 	// the TV image) / the GPU thread is about to show that frame
 	void OnGameFrame();
