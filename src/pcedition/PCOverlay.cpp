@@ -23,6 +23,8 @@
 #include "gui/interface/WindowSystem.h"
 #include "Cafe/OS/libs/nfc/nfc.h"
 #include "Cafe/OS/libs/nn_nfp/nn_nfp.h"
+#include "audio/IAudioAPI.h"
+#include "config/CemuConfig.h"
 
 void LatteFrameGen_GetStats(float& baseFps, float& shownFps, bool& generating); // LatteRenderTarget.cpp
 
@@ -111,6 +113,48 @@ namespace pce::Overlay
 		bool sMouseWasDown = false;
 		int sFpsIndex = 1;
 		int sLanguageIndex = 0; // into sLanguages
+		// audio output devices of Cemu's audio API: [0] is the system's default (empty identifier)
+		std::vector<std::string> sAudioDeviceIds, sAudioDeviceNames;
+		int sAudioDeviceIndex = 0;
+
+		void LoadAudioDevices()
+		{
+			sAudioDeviceIds = {""};
+			sAudioDeviceNames = {"Default"};
+			const auto api = (IAudioAPI::AudioAPI)GetConfig().audio_api;
+			if (IAudioAPI::IsAudioAPIAvailable(api))
+			{
+				for (const auto& d : IAudioAPI::GetDevices(api))
+				{
+					const std::wstring id = d->GetIdentifier();
+					if (id.empty() || id == L"default")
+						continue;
+					sAudioDeviceIds.push_back(boost::nowide::narrow(id));
+					sAudioDeviceNames.push_back(boost::nowide::narrow(d->GetName()));
+				}
+			}
+			sAudioDeviceIndex = 0;
+			for (int i = 0; i < (int)sAudioDeviceIds.size(); i++)
+				if (sAudioDeviceIds[i] == sEdit.audioDevice)
+					sAudioDeviceIndex = i;
+			if (sAudioDeviceIndex == 0 && !sEdit.audioDevice.empty())
+			{
+				// a device that is not connected now: keep it
+				sAudioDeviceIds.push_back(sEdit.audioDevice);
+				sAudioDeviceNames.push_back("(not connected)");
+				sAudioDeviceIndex = (int)sAudioDeviceIds.size() - 1;
+			}
+		}
+
+		// the volume of the game's sound, at once
+		void ApplyAudioLive(const Settings& s)
+		{
+			const int volume = std::clamp((int)std::lround(s.volume), 0, 100);
+			GetConfig().tv_volume = volume;
+			std::shared_lock lock(g_audioMutex);
+			if (g_tvAudio)
+				g_tvAudio->SetVolume(volume);
+		}
 		std::vector<GameLanguage> sLanguages;
 		const int kFpsValues[] = {30, 60, 90, 120, 144, 165, 240};
 
@@ -127,9 +171,12 @@ namespace pce::Overlay
 
 		void Commit()
 		{
+			if (!sAudioDeviceIds.empty())
+				sEdit.audioDevice = sAudioDeviceIds[std::clamp(sAudioDeviceIndex, 0, (int)sAudioDeviceIds.size() - 1)];
 			Settings copy = sEdit;
 			UpdateSettings([&](Settings& s) { s = copy; });
 			Graphics::ApplyLive();
+			ApplyAudioLive(copy);
 		}
 
 		// ---- amiibo: files of the player's amiibo (dumps of their figures) in <data>/amiibo; when the game looks for an
@@ -321,6 +368,15 @@ namespace pce::Overlay
 				p.items.push_back(toggle("Show FPS", &sEdit.showFps, "Shows the game frame rate and, with Frame Generation, the displayed frame rate."));
 				p.items.push_back(choice("Anti-Aliasing", &sEdit.antiAliasing, Graphics::GetAAOptions(), ""));
 				p.items.push_back(choice("Shadow Quality", &sEdit.shadowPreset, Graphics::GetShadowOptions(), "Shadow resolution and distance. Applied on next launch.", true));
+				pages.push_back(std::move(p));
+			}
+			{
+				Page p{"Audio"};
+				p.items.push_back(slider("Volume", &sEdit.volume, 0.0f, 100.0f, 1.0f, "%.0f%%", "Volume of the game's sound."));
+				p.items.push_back(choice("Speakers", &sEdit.speakers, {"Mono", "Stereo", "Surround 5.1"},
+										 "Speaker setup the game mixes its sound for. Applied on next launch.", true));
+				p.items.push_back(choice("Output Device", &sAudioDeviceIndex, sAudioDeviceNames,
+										 "Where the sound goes. Default: the device Windows uses. Applied on next launch.", true));
 				pages.push_back(std::move(p));
 			}
 			{
@@ -558,6 +614,7 @@ namespace pce::Overlay
 			for (int i = 0; i < (int)sLanguages.size(); i++)
 				if (sEdit.language == sLanguages[i].code)
 					sLanguageIndex = i;
+			LoadAudioDevices();
 			sPages = BuildPages(false);
 			sPagesEmbedded = false;
 			sRebinding = false;
@@ -1301,6 +1358,7 @@ namespace pce::Overlay
 			for (int i = 0; i < (int)sLanguages.size(); i++)
 				if (sEdit.language == sLanguages[i].code)
 					sLanguageIndex = i;
+			LoadAudioDevices();
 			sPages = BuildPages(true);
 			sPagesEmbedded = true;
 			sPage = std::clamp(sPage, 0, (int)sPages.size() - 1);

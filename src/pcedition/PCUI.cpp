@@ -609,8 +609,36 @@ namespace pce::UI
 		}
 
 		// ---------------------------------------------------------------- keyboard & mouse prompts
-		// original button codes (index in the text buffer, U+E040..) of text boxes whose glyphs were re-targeted
-		std::unordered_map<uint32, std::vector<std::pair<uint32, uint16>>> sPromptGlyphs;
+		// text boxes whose glyphs were re-targeted: the original button codes (index in the text buffer, U+E040..) and what
+		// the text box was. The game frees text boxes (layouts are unloaded) and their memory is taken by other objects:
+		// writing into that corrupted the game (reported crashes: heap pointers 0x44xxxxxx turned into 0x64xxxxxx by the
+		// redraw flag). So a text box is only written while it is still the same one: name, buffer, and in the buffer the
+		// original code or the glyph we put there.
+		struct PromptBox
+		{
+			std::string name;
+			uint32 buf = 0;
+			std::vector<std::pair<uint32, uint16>> codes;
+			std::vector<uint16> written; // the glyph we last wrote at each code (0: none yet)
+		};
+		std::unordered_map<uint32, PromptBox> sPromptGlyphs;
+
+		bool StillPromptBox(uint32 pane, const PromptBox& box)
+		{
+			if (!PaneOk(pane) || memory_readU32(pane + kTextBuf) != box.buf || ReadName(pane) != box.name)
+				return false;
+			const uint32 len = memory_readU16(pane + kTextLen);
+			for (size_t i = 0; i < box.codes.size(); i++)
+			{
+				const uint32 idx = box.codes[i].first;
+				if (idx >= len || !ValidPtr(box.buf + idx * 2, 2))
+					return false;
+				const uint16 cur = memory_readU16(box.buf + idx * 2);
+				if (cur != box.codes[i].second && cur != box.written[i])
+					return false;
+			}
+			return true;
+		}
 
 		bool IsMenuScreen(const std::string& s)
 		{
@@ -653,6 +681,7 @@ namespace pce::UI
 
 		bool sHeldItems = false; // State::HeldItems of the last state
 		bool sActionOffered = false; // the last state had an action on the interact button (State::actionA)
+		bool sThrowShown = false; // the last state had "Throw" (a bomb or an object in the hands)
 
 		// which PC glyph a prompt should show: menus are driven by the pointer, gameplay prompts follow the
 		// context controls of PCInput (scope, runes, bombs, climbing, swimming, cutscenes, magnesis)
@@ -701,21 +730,24 @@ namespace pce::UI
 				g = act(pce::Action::Interact);
 			else if (has("Dash"))
 				g = act(pce::Action::Sprint);
-			else if (has("Push") || has("Pull") || has("Far") || has("Near"))
-				g = kGlyphWheelUpDown;
+			else if ((has("Push") || has("Pull") || has("Far") || has("Near")) && !sThrowShown)
+				g = kGlyphWheelUpDown; // (not with something to throw: a text of another language may stand for several)
 			return g ? g : DefaultGlyphFor(s, code);
 		}
 
-		void ApplyPrompts(uint32 pane, bool markDirty, const Settings& s)
+		// false: the text box is not the one we know any more (forget it)
+		bool ApplyPrompts(uint32 pane, bool markDirty, const Settings& s)
 		{
 			auto it = sPromptGlyphs.find(pane);
-			if (it == sPromptGlyphs.end() || !PaneOk(pane))
-				return;
-			const uint32 buf = memory_readU32(pane + kTextBuf);
-			const uint32 len = memory_readU16(pane + kTextLen);
+			if (it == sPromptGlyphs.end())
+				return true;
+			PromptBox& box = it->second;
+			if (!StillPromptBox(pane, box))
+				return false;
+			const uint32 buf = box.buf;
 			auto ti = sTexts.find(pane);
 			if (ti == sTexts.end())
-				return;
+				return true;
 			// label: the guide text next to an icon, else the text box itself
 			std::string label = ti->second.text;
 			const std::string& name = ti->second.name;
@@ -730,19 +762,20 @@ namespace pce::UI
 			}
 			const std::string screen = ScreenOf(pane);
 			bool changed = false;
-			for (auto& [idx, code] : it->second)
+			for (size_t i = 0; i < box.codes.size(); i++)
 			{
-				if (idx >= len || !ValidPtr(buf + idx * 2, 2))
-					continue;
+				const auto [idx, code] = box.codes[i];
 				const uint16 g = PromptGlyph(pane, code, screen, label, s);
 				if (memory_readU16(buf + idx * 2) != g)
 				{
 					memory_writeU16(buf + idx * 2, g);
+					box.written[i] = g;
 					changed = true;
 				}
 			}
 			if (changed && markDirty)
 				memory_writeU8(pane + 0xD0, memory_readU8(pane + 0xD0) | 0x20); // text box: rebuild glyphs
+			return true;
 		}
 
 		void OnTextSetPrompts(uint32 pane, const std::string& name, uint32 buf, uint32 len)
@@ -768,9 +801,14 @@ namespace pce::UI
 			{
 				if (sPromptGlyphs.size() > 4000)
 					sPromptGlyphs.clear();
-				sPromptGlyphs[pane] = std::move(codes);
+				PromptBox& box = sPromptGlyphs[pane];
+				box.name = name;
+				box.buf = buf;
+				box.written.assign(codes.size(), 0);
+				box.codes = std::move(codes);
 				// first guess (the text box may not be attached to its screen yet; RefreshPrompts corrects it)
-				ApplyPrompts(pane, false, GetSettings());
+				if (!ApplyPrompts(pane, false, GetSettings()))
+					sPromptGlyphs.erase(pane);
 			}
 		}
 
@@ -783,13 +821,11 @@ namespace pce::UI
 			const Settings s = GetSettings();
 			for (auto it = sPromptGlyphs.begin(); it != sPromptGlyphs.end();)
 			{
-				if (!PaneOk(it->first))
+				if (!PaneOk(it->first) || (Visible(it->first) && !ApplyPrompts(it->first, true, s)))
 				{
 					it = sPromptGlyphs.erase(it);
 					continue;
 				}
-				if (Visible(it->first))
-					ApplyPrompts(it->first, true, s);
 				++it;
 			}
 		}
@@ -1776,9 +1812,33 @@ namespace pce::UI
 		}
 		else if (!hidden && sHiddenRoot)
 		{
-			if (PaneOk(sHiddenRoot))
+			// (only if it still is the box cursor's root: the layout may have been freed meanwhile)
+			if (root == sHiddenRoot && PaneOk(sHiddenRoot))
 				memory_writeU8(sHiddenRoot + kFlag, memory_readU8(sHiddenRoot + kFlag) | 1);
 			sHiddenRoot = 0;
+		}
+	}
+
+	namespace
+	{
+		// a limit rectangle of the map controller (x0, y0, x1, y1, map units): the cursor's at +0x60 (the scroll's for
+		// the current zoom is at +0x70, its bottom open)
+		struct MapRect
+		{
+			float x0, y0, x1, y1;
+		};
+
+		bool ReadMapRect(uint32 addr, MapRect& r)
+		{
+			if (!ValidPtr(addr, 0x10))
+				return false;
+			r = {memory_readFloat(addr), memory_readFloat(addr + 4), memory_readFloat(addr + 8), memory_readFloat(addr + 12)};
+			return !std::isnan(r.x0) && !std::isnan(r.y0) && !std::isnan(r.x1) && !std::isnan(r.y1);
+		}
+
+		float Limit(float v, float lo, float hi)
+		{
+			return lo <= hi ? std::clamp(v, lo, hi) : v;
 		}
 	}
 
@@ -1788,6 +1848,7 @@ namespace pce::UI
 			return false;
 		const float dx = (normX - ps.mapX) * kLayoutW / ps.mapScaleX;
 		const float dy = -(normY - ps.mapY) * kLayoutH / ps.mapScaleY;
+		// (not held to the game's scroll limits: zoomed out they pin the map sideways and a drag would not follow the mouse)
 		const float x = memory_readFloat(ps.mapCtrl + 0x20) + dx;
 		const float y = memory_readFloat(ps.mapCtrl + 0x24) + dy;
 		if (!std::isfinite(x) || !std::isfinite(y))
@@ -1798,7 +1859,7 @@ namespace pce::UI
 			memory_writeFloat(ps.mapCtrl + off, x);
 			memory_writeFloat(ps.mapCtrl + off + 4, y);
 		}
-		// map cursor position (controller + 0x3160, negated scroll; also its previous value): stamps, pins and
+		// map cursor position (controller + 0x3160, negated scroll; also the target it eases to): stamps, pins and
 		// fast travel use it, the stick input normally keeps both in sync
 		const uint32 cursor = ps.mapCtrl - 0x648 + 0x3160;
 		if (ValidPtr(cursor, 0x10))
@@ -1808,6 +1869,38 @@ namespace pce::UI
 				memory_writeFloat(cursor + off, -x);
 				memory_writeFloat(cursor + off + 4, -y);
 			}
+		}
+		return true;
+	}
+
+	bool MapPointAt(const PointerSnapshot& ps, float normX, float normY, float& x, float& y)
+	{
+		if (!ps.mapCtrl || std::fabs(ps.mapScaleX) < 1e-4f || std::fabs(ps.mapScaleY) < 1e-4f)
+			return false;
+		// the map's own units: layout units / scale, from the map origin, y up
+		x = (normX - ps.mapX) * kLayoutW / ps.mapScaleX;
+		y = (ps.mapY - normY) * kLayoutH / ps.mapScaleY;
+		return std::isfinite(x) && std::isfinite(y);
+	}
+
+	bool SetMapCursor(const PointerSnapshot& ps, float x, float y)
+	{
+		// cursor (controller + 0x3160) and the target it eases to (+0x3168); the game keeps them where they are put
+		// (the scroll follows only within its limits), except that it pulls the target back onto an icon the cursor
+		// was on for a frame or two
+		const uint32 cursor = ps.mapCtrl - 0x648 + 0x3160;
+		if (!ps.mapCtrl || !std::isfinite(x) || !std::isfinite(y) || !ValidPtr(cursor, 0x10))
+			return false;
+		MapRect cur;
+		if (ReadMapRect(ps.mapCtrl + 0x60, cur))
+		{
+			x = Limit(x, cur.x0, cur.x1);
+			y = Limit(y, cur.y0, cur.y1);
+		}
+		for (uint32 off : {0x0u, 0x8u})
+		{
+			memory_writeFloat(cursor + off, x);
+			memory_writeFloat(cursor + off + 4, y);
 		}
 		return true;
 	}
@@ -2008,6 +2101,7 @@ namespace pce::UI
 			Compute(sState);
 			sStateFrame = frame;
 			sHeldItems = sState.HeldItems();
+			sThrowShown = sState.Has("Throw");
 			sActionOffered = !sState.actionA.empty();
 			const uint64 us = (uint64)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - t0).count();
 			sComputeTotalUs += us;

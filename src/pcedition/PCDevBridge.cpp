@@ -317,6 +317,14 @@ namespace pce::DevBridge
 					std::string r = fmt::format("tabs={}/{} ", ps.currentTab, ps.tabCount) + fmt::format("pm={} gm={} inv={} map={} title={} dialog={} scope={} hud={} sel={} box={}({:.3f},{:.3f}) map={}({:.3f},{:.3f})",
 						dbg.lastPointerMode.load(), dbg.lastGameMenu.load(), st.inventory, st.map, st.title, st.dialog, st.scope, st.hud,
 						ps.Selected(), ps.hasBoxCursor, ps.boxX, ps.boxY, ps.hasMap, ps.mapX, ps.mapY);
+					if (ps.mapCtrl)
+					{
+						const uint32 cur = ps.mapCtrl - 0x648 + 0x3160;
+						r += fmt::format(" mapctrl={:08x} scroll=({:.1f},{:.1f}) prev=({:.1f},{:.1f}) cursor=({:.1f},{:.1f}) cprev=({:.1f},{:.1f}) scale=({:.3f},{:.3f})",
+							ps.mapCtrl, memory_readFloat(ps.mapCtrl + 0x20), memory_readFloat(ps.mapCtrl + 0x24), memory_readFloat(ps.mapCtrl + 0x30),
+							memory_readFloat(ps.mapCtrl + 0x34), memory_readFloat(cur), memory_readFloat(cur + 4), memory_readFloat(cur + 8),
+							memory_readFloat(cur + 12), ps.mapScaleX, ps.mapScaleY);
+					}
 					for (int k = 0; k < 2; k++)
 						r += fmt::format(" arrow{}={}({:.3f},{:.3f})-({:.3f},{:.3f})", k ? "R" : "L", ps.pageArrow[k], ps.pageArrowRect[k].x0, ps.pageArrowRect[k].y0,
 										 ps.pageArrowRect[k].x1, ps.pageArrowRect[k].y1);

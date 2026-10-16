@@ -129,6 +129,11 @@ namespace pce
 		bool cpuPinning = false;
 		int frameGeneration = 0;            // 0 off, 1 AMD FSR 3 frame generation
 
+		// audio (Cemu's TV audio): the volume is applied at once, speakers and device when the game starts
+		float volume = 50.0f;               // percent
+		int speakers = 1;                   // 0 mono, 1 stereo, 2 surround 5.1
+		std::string audioDevice;            // identifier of the output device (empty: the system's default)
+
 		// display
 		bool fullscreen = true;             // borderless fullscreen
 

@@ -78,6 +78,8 @@ namespace pce::Menus
 		float sMapTx = 0, sMapTy = 0;
 		uint32 sMapTargetFrame = 0;
 		int sMapSettle = 0;
+		int sMapCursorFrames = 0; // frames the map cursor is still held on the clicked spot before the confirm
+		float sMapCx = 0, sMapCy = 0; // the clicked spot (map units)
 		int sZoomFrames = 0;
 		float sZoomDir = 0;
 
@@ -172,14 +174,33 @@ namespace pce::Menus
 				sMapClick = false;
 				if (!sMapDragging && io.mouseInside)
 				{
-					// bring the clicked spot under the map cursor (screen centre), then confirm
-					sMapTx = ps.mapX + (0.5f - mx);
-					sMapTy = ps.mapY + (0.5f - my);
-					sMapTargetActive = true;
-					sMapConfirm = true;
-					sMapTargetFrame = io.frame;
+					if (UI::MapPointAt(ps, mx, my, sMapCx, sMapCy) && UI::SetMapCursor(ps, sMapCx, sMapCy))
+					{
+						// the map cursor jumps to the clicked spot (the map stays still), then confirm
+						sMapTargetActive = false;
+						sMapCursorFrames = 4;
+					}
+					else
+					{
+						// fallback: steer the clicked spot under the map cursor (screen centre) with the stick, then confirm
+						sMapTx = ps.mapX + (0.5f - mx);
+						sMapTy = ps.mapY + (0.5f - my);
+						sMapTargetActive = true;
+						sMapConfirm = true;
+						sMapTargetFrame = io.frame;
+					}
 				}
+				else if (sMapDragging && ps.mapCtrl)
+					sMapTargetActive = false; // the drag wrote the scroll directly: nothing left to reach (past its limits the game eases it back)
 				sMapDragging = false;
+			}
+			if (sMapCursorFrames > 0)
+			{
+				// hold it there until the game lets go of the icon it was on (it pulls the cursor back to an icon
+				// that was just selected) and the map picks up what is under it, then confirm
+				UI::SetMapCursor(ps, sMapCx, sMapCy);
+				if (--sMapCursorFrames == 0 && !sConfirm.Busy())
+					sConfirm.Start(kA, 3, 3);
 			}
 			if (sMapTargetActive)
 			{
@@ -376,6 +397,7 @@ namespace pce::Menus
 			sPendingPart = 0;
 			sMapTargetActive = false;
 			sMapClick = false;
+			sMapCursorFrames = 0;
 			sTabTarget = -1;
 			sTabSteps = 0;
 			sTabPhase = 0;
@@ -393,6 +415,8 @@ namespace pce::Menus
 		const bool mapMode = pointerScreen && st.map && ps.hasMap && !(ps.hasBoxCursor && sel >= 0);
 		if (mapMode)
 			UpdateMap(ps, io);
+		else
+			sMapCursorFrames = 0;
 		const uint32 selGroup = sel >= 0 ? ps.targets[sel].group : 0;
 		if (pointerScreen && !mapMode)
 		{

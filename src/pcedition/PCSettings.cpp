@@ -218,6 +218,11 @@ namespace pce
 			// with the new default
 			Get(m, "Graphics", "PinThreads", s.cpuPinning);
 			Get(m, "Display", "Fullscreen", s.fullscreen);
+			Get(m, "Audio", "Volume", s.volume);
+			s.volume = std::clamp(s.volume, 0.0f, 100.0f);
+			Get(m, "Audio", "Speakers", s.speakers);
+			s.speakers = std::clamp(s.speakers, 0, 2);
+			Get(m, "Audio", "Device", s.audioDevice);
 			Get(m, "Game", "Path", s.gamePath);
 			Get(m, "Game", "Language", s.language);
 			Get(m, "Game", "TemperatureUnit", s.temperatureUnit);
@@ -293,6 +298,10 @@ namespace pce
 		o << "FrameGeneration=" << s.frameGeneration << "\n\n";
 		o << "[Display]\n";
 		o << "Fullscreen=" << b(s.fullscreen) << "\n\n";
+		o << "[Audio]\n";
+		o << "Volume=" << s.volume << "\n";
+		o << "Speakers=" << s.speakers << "\n";
+		o << "Device=" << s.audioDevice << "\n\n";
 		o << "[Game]\n";
 		o << "Path=" << s.gamePath << "\n";
 		o << "Language=" << s.language << "\n";

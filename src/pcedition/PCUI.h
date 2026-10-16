@@ -154,6 +154,10 @@ namespace pce::UI
 	std::string ShownScreens();
 	// scroll the world map so that its origin lands at the given normalized screen position (instant)
 	bool SetMapOrigin(const PointerSnapshot& ps, float normX, float normY);
+	// the map point (the map cursor's units) under a screen spot; false if unknown
+	bool MapPointAt(const PointerSnapshot& ps, float normX, float normY, float& x, float& y);
+	// puts the map's cursor and the target it eases to on a map point (the map does not move); false if unknown
+	bool SetMapCursor(const PointerSnapshot& ps, float x, float y);
 	// page the pause menu opens on next time (0 inventory, 1 system, 2 adventure log); the game stores the page it was
 	// closed on and reads it back when the menu opens. False if the game's menu data is not available.
 	bool SetPauseMenuStartPage(int page);

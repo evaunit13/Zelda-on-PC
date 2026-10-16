@@ -554,6 +554,10 @@ namespace pce
 			}
 			Settings s = GetSettings();
 			c.vsync = s.vsync ? 1 : 0;
+			// audio: the PC settings decide (Cemu's own dialog is not reachable)
+			c.tv_volume = std::clamp((int)std::lround(s.volume), 0, 100);
+			c.tv_channels = (AudioChannels)std::clamp(s.speakers, 0, 2);
+			c.tv_device = s.audioDevice.empty() ? std::wstring(L"default") : boost::nowide::widen(s.audioDevice);
 			GetConfigHandle().Save();
 		}
 	}

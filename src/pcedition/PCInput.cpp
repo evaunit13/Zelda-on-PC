@@ -1755,7 +1755,8 @@ namespace pce::Input
 				else if (heldItems && down(Action::Bow))
 					remap(Action::Bow, VPAD_ZR, btnOr("Put away", VPAD_B));
 				// magnesis: wheel pushes / pulls
-				pushPullContext = ui.Has("Push") || ui.Has("Pull") || ui.Has("Far") || ui.Has("Near");
+				// (never with something to throw in the hands: a bomb's Drop must not become the d-pad, Link whistles)
+				pushPullContext = (ui.Has("Push") || ui.Has("Pull") || ui.Has("Far") || ui.Has("Near")) && !throwIt;
 				if (pushPullContext && wheel != 0)
 				{
 					fs.pushPullButton = wheel > 0 ? VPAD_UP : VPAD_DOWN;
