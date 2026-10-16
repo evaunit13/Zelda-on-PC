@@ -83,11 +83,12 @@ the game's tutorial tips show your keys where the game has pictures of the GameP
 - Starts directly into the game: no emulator window, no game list, no first-run wizard.
 - Borderless fullscreen (`Alt+Enter` toggles a window), cursor captured while playing and released in menus.
 - **Settings in the game's own pause menu.** `Esc` opens it on its System page (save, load, options), where the PC
-  settings take the place of the game's picture of the GamePad: camera, controls, motion, graphics, game. Mouse or
-  keyboard (`→` to go in, `Esc` to come out). On the title screen `Esc` opens them on their own. They are stored in a
-  readable `settings.ini`.
+  settings take the place of the game's picture of the GamePad: camera, controls, motion, graphics, audio, game.
+  Mouse or keyboard (`→` to go in, `Esc` to come out). On the title screen `Esc` opens them on their own. They are
+  stored in a readable `settings.ini`.
 - Resolution from 720p to 4K, frame rate limits from 30 to 240 FPS with corrected game speed and physics, shadows,
   anti-aliasing, V-Sync.
+- Audio: volume (applied at once), speakers (mono, stereo, 5.1 surround) and the output device.
 - **Aspect ratio:** 16:9, 16:10, 21:9 and 32:9, with the HUD at the edges of the screen or centred on ultrawide. An
   ultrawide main display is detected. New, and so far tried in a window only, not on an ultrawide display.
 - Inventory, map and Adventure Log open directly on their page (`Tab` / `I`, `M`, `J`).
