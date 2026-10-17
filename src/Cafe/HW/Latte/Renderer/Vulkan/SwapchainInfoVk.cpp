@@ -7,6 +7,7 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanFFX.h"
+#include "pcedition/PCGraphics.h"
 
 SwapchainInfoVk::SwapchainInfoVk(bool mainWindow, Vector2i size) : mainWindow(mainWindow), m_desiredExtent(size)
 {
@@ -50,6 +51,27 @@ void SwapchainInfoVk::Create()
 	VkSwapchainCreateInfoKHR create_info = CreateSwapchainCreateInfo(m_surface, details, m_surfaceFormat, image_count, m_actualExtent);
 	create_info.oldSwapchain = nullptr;
 	create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT; // TRANSFER_SRC: frame generation reads the final image
+
+	// Zelda on PC: exclusive fullscreen (Settings::displayMode 2). The swapchain is made for it and takes the display
+	// with vkAcquireFullScreenExclusiveModeEXT while the window is in front; with frame generation the FSR swapchain owns
+	// the real one, so the driver decides there. Windowed and borderless keep the driver's default.
+	m_fsMode = mainWindow ? WantedFullscreenMode() : 0;
+	m_exclusiveAcquired = false;
+	m_exclusiveRetryTick = 0;
+	m_exclusiveLastResult = 1; // log the first attempt of every swapchain
+#if BOOST_OS_WINDOWS
+	VkSurfaceFullScreenExclusiveInfoEXT fsInfo{VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_INFO_EXT};
+	VkSurfaceFullScreenExclusiveWin32InfoEXT fsWin32{VK_STRUCTURE_TYPE_SURFACE_FULL_SCREEN_EXCLUSIVE_WIN32_INFO_EXT};
+	if (m_fsMode == 2 && VulkanRenderer::GetInstance()->FullScreenExclusiveSupported())
+	{
+		fsWin32.hmonitor = MonitorFromWindow((HWND)WindowSystem::GetWindowInfo().canvas_main.surface, MONITOR_DEFAULTTONEAREST);
+		fsWin32.pNext = create_info.pNext;
+		fsInfo.pNext = &fsWin32;
+		fsInfo.fullScreenExclusive = useFFX ? VK_FULL_SCREEN_EXCLUSIVE_ALLOWED_EXT : VK_FULL_SCREEN_EXCLUSIVE_APPLICATION_CONTROLLED_EXT;
+		create_info.pNext = &fsInfo;
+		cemuLog_log(LogType::Force, "Vulkan: swapchain for exclusive fullscreen ({})", useFFX ? "driver decides, frame generation" : "application controlled");
+	}
+#endif
 
 	VkResult result = vkCreateSwapchainKHR(m_logicalDevice, &create_info, nullptr, &m_swapchain);
 	if (result != VK_SUCCESS)
@@ -254,8 +276,13 @@ bool SwapchainInfoVk::AcquireImage()
 	VkSemaphore acquireSemaphore = m_acquireSemaphores[m_acquireIndex];
 	VkResult result = m_ffx ? VulkanFFX::Get().AcquireNextImage(m_logicalDevice, m_swapchain, 1'000'000'000, acquireSemaphore, m_imageAvailableFence, &swapchainImageIndex)
 							: vkAcquireNextImageKHR(m_logicalDevice, m_swapchain, 1'000'000'000, acquireSemaphore, m_imageAvailableFence, &swapchainImageIndex);
-	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
+	if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || IsExclusiveLost(result))
 		m_shouldRecreate = true;
+	if (IsExclusiveLost(result))
+	{
+		swapchainImageIndex = -1;
+		return false;
+	}
 	if (result == VK_TIMEOUT)
 	{
 		swapchainImageIndex = -1;
@@ -274,6 +301,41 @@ bool SwapchainInfoVk::AcquireImage()
 	m_acquireIndex = (m_acquireIndex + 1) % m_swapchainImages.size();
 
 	return true;
+}
+
+int SwapchainInfoVk::WantedFullscreenMode()
+{
+	return pce::Graphics::GetDisplayModeApplied();
+}
+
+bool SwapchainInfoVk::IsExclusiveLost(VkResult result)
+{
+#if BOOST_OS_WINDOWS
+	return result == VK_ERROR_FULL_SCREEN_EXCLUSIVE_MODE_LOST_EXT;
+#else
+	return false;
+#endif
+}
+
+void SwapchainInfoVk::AcquireExclusive()
+{
+#if BOOST_OS_WINDOWS
+	if (m_fsMode != 2 || m_ffx || m_exclusiveAcquired || m_swapchain == VK_NULL_HANDLE || !vkAcquireFullScreenExclusiveModeEXT ||
+		!VulkanRenderer::GetInstance()->FullScreenExclusiveSupported())
+		return;
+	HWND window = GetAncestor((HWND)WindowSystem::GetWindowInfo().canvas_main.surface, GA_ROOT);
+	if (GetForegroundWindow() != window)
+		return;
+	const uint64 now = GetTickCount64();
+	if (now < m_exclusiveRetryTick)
+		return;
+	m_exclusiveRetryTick = now + 1000;
+	const VkResult result = vkAcquireFullScreenExclusiveModeEXT(m_logicalDevice, m_swapchain);
+	m_exclusiveAcquired = result == VK_SUCCESS;
+	if ((int)result != m_exclusiveLastResult)
+		cemuLog_log(LogType::Force, "Vulkan: exclusive fullscreen {} ({})", m_exclusiveAcquired ? "acquired" : "not acquired", (int)result);
+	m_exclusiveLastResult = (int)result;
+#endif
 }
 
 void SwapchainInfoVk::UnrecoverableError(const char* errMsg)

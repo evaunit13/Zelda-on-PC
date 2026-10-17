@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "pcedition/PCEdition.h"
+#include "pcedition/PCGraphics.h"
 #include "pcedition/PCInput.h"
 #include "pcedition/PCOverlay.h"
 #include "pcedition/PCSettings.h"
@@ -395,8 +396,22 @@ MainWindow::MainWindow()
 	if (pce::IsActive())
 	{
 		SetIcon(wxICON(M_WND_ICON128));
-		SetFullScreen(pce::GetSettings().fullscreen && !pce::ForceWindowed());
+		m_pce_settings_rev = pce::GetSettingsRevision();
+		ApplyPCEDisplayMode(pce::ForceWindowed() ? 0 : pce::GetSettings().displayMode);
 	}
+}
+
+// PC Edition display mode (Settings::displayMode): windowed, or a window covering the screen; for exclusive fullscreen
+// the swapchain asks the graphics driver for the display (SwapchainInfoVk)
+void MainWindow::ApplyPCEDisplayMode(int mode)
+{
+	mode = std::clamp(mode, 0, 2);
+	pce::Graphics::SetDisplayModeApplied(mode);
+	if (mode != 0)
+		m_pce_last_fullscreen_mode = mode;
+	if (m_pce_display_mode < 0 || (m_pce_display_mode != 0) != (mode != 0))
+		SetFullScreen(mode != 0);
+	m_pce_display_mode = mode;
 }
 
 MainWindow::~MainWindow()
@@ -1604,9 +1619,11 @@ void MainWindow::OnKeyDown(wxKeyEvent& event)
     }
     else if (pce::IsActive() && event.AltDown() && (event.GetKeyCode() == WXK_RETURN || event.GetKeyCode() == WXK_NUMPAD_ENTER))
     {
-        const bool fs = !IsFullScreen();
-        SetFullScreen(fs);
-        pce::UpdateSettings([fs](pce::Settings& s) { s.fullscreen = fs; });
+        const int mode = m_pce_display_mode != 0 ? 0 : m_pce_last_fullscreen_mode;
+        ApplyPCEDisplayMode(mode);
+        if (!pce::ForceWindowed())
+            pce::UpdateSettings([mode](pce::Settings& s) { s.displayMode = mode; });
+        m_pce_settings_rev = pce::GetSettingsRevision();
     }
 #endif
     else
@@ -1996,6 +2013,15 @@ void MainWindow::OnTimer(wxTimerEvent& event)
 {
 	if (pce::IsActive())
 	{
+		// display mode changed in the PC settings
+		const unsigned long long rev = pce::GetSettingsRevision();
+		if (rev != m_pce_settings_rev)
+		{
+			m_pce_settings_rev = rev;
+			const int mode = pce::GetSettings().displayMode;
+			if (!pce::ForceWindowed() && mode != m_pce_display_mode)
+				ApplyPCEDisplayMode(mode);
+		}
 		UpdatePCECursor();
 		return;
 	}

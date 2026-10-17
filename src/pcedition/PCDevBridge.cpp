@@ -490,6 +490,16 @@ namespace pce::DevBridge
 					UpdateSettings([v](Settings& st) { st.cpuPinning = v; }, false);
 					return "ok";
 				}
+				if (c == "displaymode")
+				{
+					// displaymode [0 windowed | 1 borderless | 2 exclusive fullscreen]: sets it as the PC settings do
+					if (a.size() > 1)
+					{
+						const int v = (int)u(1);
+						UpdateSettings([v](Settings& st) { st.displayMode = v; }, false);
+					}
+					return fmt::format("setting {} applied {}", GetSettings().displayMode, Graphics::GetDisplayModeApplied());
+				}
 				if (c == "fsr" && a.size() > 2 && a[1] == "setting")
 				{
 					const int v = (int)u(2);

@@ -370,7 +370,7 @@ bool CemuApp::OnInit()
 		wxc.use_discord_presence = false;
 		wxc.fullscreen_menubar = false;
 		wxc.did_show_vulkan_warning = true;
-		wxc.fullscreen = pce::GetSettings().fullscreen && !pce::ForceWindowed();
+		wxc.fullscreen = pce::GetSettings().displayMode != 0 && !pce::ForceWindowed();
 		pce::Graphics::ApplySettingsToPacks();
 		if (!pce::IsGameAvailable() && !pce::GetDiscImageWithoutKey().empty())
 		{

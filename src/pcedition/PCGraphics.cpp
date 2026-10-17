@@ -240,6 +240,73 @@ mtlr r11
 fadds f1, f12, f1
 blr
 
+; shield surf camera: its update (0x02BE8B30, r3 = camera)
+_pceSurfCamEntry:
+mflr r0
+bl import.coreinit.PCE_SurfCamTick
+mtlr r0
+stwu r1, -0x280(r1)
+b 0x02BE8B34
+
+; ... its pitch (degrees, +0xA4) as the stick turns it: f1 = pitch, r29 = camera; r11 is free (a call follows)
+_pceSurfCamPitch:
+lfs f1, 0xa4(r29)
+mflr r11
+mr r3, r29
+li r4, 0
+bl import.coreinit.PCE_SurfCamPitch
+mtlr r11
+blr
+
+; sand seal camera (towed on the shield): the same kind of camera as the shield surf one, update 0x02BF5ACC (r3 =
+; camera), pitch +0xA0 read at 0x02BF5E80 (camera in r30), yaw at 0x02BF65E8: f1 = current yaw (f27) + stick turn (f8)
+_pceSealCamEntry:
+mflr r0
+bl import.coreinit.PCE_SealCamTick
+mtlr r0
+stwu r1, -0x280(r1)
+b 0x02BF5AD0
+
+_pceSealCamPitch:
+lfs f1, 0xa0(r30)
+mflr r11
+mr r3, r30
+li r4, 1
+bl import.coreinit.PCE_SurfCamPitch
+mtlr r11
+blr
+
+_pceSealCamYaw:
+fadds f1, f27, f8
+mflr r11
+bl import.coreinit.PCE_SurfCamYaw
+mtlr r11
+blr
+
+; ... and its yaw while the stick is held: f1 = current yaw (f30) + stick turn (f0), degrees; r11 is free (a call follows)
+_pceSurfCamYaw:
+fadds f1, f30, f0
+mflr r11
+bl import.coreinit.PCE_SurfCamYaw
+mtlr r11
+blr
+
+; waterfall camera (swimming up a waterfall with the Zora armour): its update (0x02BF8F88, r3 = camera) turns only the yaw,
+; by the stick while mode +0x28 is 2: f1 = current yaw (f31) + stick turn (f30), degrees, at 0x02BF914C
+_pceFallCamEntry:
+mflr r0
+bl import.coreinit.PCE_FallCamTick
+mtlr r0
+stwu r1, -0x128(r1)
+b 0x02BF8F8C
+
+_pceFallCamYaw:
+fadds f1, f31, f30
+mflr r11
+bl import.coreinit.PCE_SurfCamYaw
+mtlr r11
+blr
+
 ; ---- the two aim cameras: 0x02B9250C is the zoomed one (scope, bow drawn: "Scope" below), 0x02B94E30 the one of the
 ; runes that are aimed (Magnesis, Stasis, Cryonis: "Bow" below, named before a bow could be tested) ----
 _pceScopeEntry:
@@ -296,6 +363,14 @@ blr
 0x02BCED3C = b _pceRuneCamEntry
 0x02BF0234 = b _pceLockCamEntry
 0x02BCF698 = bla _pceRuneCamYaw
+0x02BE8B30 = b _pceSurfCamEntry
+0x02BE8EF8 = bla _pceSurfCamPitch
+0x02BE9698 = bla _pceSurfCamYaw
+0x02BF5ACC = b _pceSealCamEntry
+0x02BF5E80 = bla _pceSealCamPitch
+0x02BF65E8 = bla _pceSealCamYaw
+0x02BF8F88 = b _pceFallCamEntry
+0x02BF914C = bla _pceFallCamYaw
 0x02B9250C = b _pceScopeEntry
 0x02B94E30 = b _pceBowEntry
 0x02B92848 = bla _pceScopePitch
@@ -544,6 +619,21 @@ blr
 	fs::path GetEditionPackDir()
 	{
 		return PacksDir() / "BotWPCEdition";
+	}
+
+	namespace
+	{
+		std::atomic<int> sDisplayModeApplied{1};
+	}
+
+	void SetDisplayModeApplied(int mode)
+	{
+		sDisplayModeApplied = mode;
+	}
+
+	int GetDisplayModeApplied()
+	{
+		return sDisplayModeApplied.load();
 	}
 
 	void PrepareGraphicPacks()

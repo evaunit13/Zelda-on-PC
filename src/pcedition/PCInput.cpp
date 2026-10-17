@@ -710,6 +710,84 @@ namespace pce::Input
 			hCPU->instructionPointer = hCPU->spr.LR;
 		}
 
+		// Shield surf camera (update 0x02BE8B30, r3 = camera), called from the camera manager instead of the chase camera, so
+		// the mouse went through right stick emulation (the view trailed the mouse by ~10 frames). U-King v1.5.0: state byte
+		// +0x1C2 is 5 while the stick is deflected; then the yaw is the current direction of the eye from the look-at point
+		// plus the stick's turn (0x02BE9698: f1 = f30 + f0, degrees), and the mouse yaw is added there (PCE_SurfCamYaw).
+		// The stick's negligible deflection of the direct camera keeps the camera in that state while the mouse moves. When
+		// the stick is let go, the camera keeps the yaw as an offset (+0xC0) from Link's smoothed heading (+0xBC) and eases
+		// back behind him, as with the GamePad. Pitch at +0xA4 (degrees, stick up lowers it): set from the view when the
+		// state changes, so the mouse pitch is added where the update takes it to turn it by the stick (0x02BE8EF8, in
+		// state 5 only: the other states do not use that value); the game keeps it within its own soft limits.
+		// The sand seal camera (towed on the shield, update 0x02BF5ACC) is the same kind of camera with other offsets:
+		// state byte +0x1EA (4 while the stick is deflected), pitch +0xA0 read at 0x02BF5E80, yaw at 0x02BF65E8.
+		std::atomic<uint32> sSurfCamFrame{0xF0000000}, sSealCamFrame{0xF0000000};
+		struct SurfCamKind
+		{
+			uint32 stateOffset;
+			uint8 manualState; // state while the stick is deflected
+		};
+		constexpr SurfCamKind kSurfCamKinds[] = {{0x1C2, 5}, {0x1EA, 4}}; // shield surf, sand seal (r4 of PCE_SurfCamPitch)
+
+		void HLE_SurfCamTick(PPCInterpreter_t* hCPU)
+		{
+			const uint32 frame = sDebug.frameCounter.load();
+			sSurfCamFrame = frame;
+			sCamTickFrame = frame;
+			sDebug.cameraObject = hCPU->gpr[3];
+			{
+				// drop mouse rotation the camera did not take (it is taken only while the stick is deflected)
+				std::lock_guard lock(sCamMutex);
+				if (++sYawAge > 2)
+					sPendingYaw = 0.0;
+				if (++sPitchAge > 2)
+					sPendingPitch = 0.0;
+			}
+			hCPU->instructionPointer = hCPU->spr.LR;
+		}
+
+		void HLE_SealCamTick(PPCInterpreter_t* hCPU)
+		{
+			sSealCamFrame = sDebug.frameCounter.load();
+			HLE_SurfCamTick(hCPU);
+		}
+
+		// Waterfall camera (swimming up a waterfall with the Zora armour, update 0x02BF8F88, r3 = camera): it turns only the
+		// yaw (the stick's up / down does nothing there), by the stick while mode +0x28 is 2 (set while the stick is not
+		// zero): 0x02BF914C, f1 = current yaw (from the eye) + stick turn, degrees, where the mouse yaw is added
+		// (PCE_SurfCamYaw). When the stick is let go the camera keeps its direction (mode 0) unless the game asks it to
+		// follow Link again (mode 1).
+		std::atomic<uint32> sFallCamFrame{0xF0000000};
+
+		void HLE_FallCamTick(PPCInterpreter_t* hCPU)
+		{
+			sFallCamFrame = sDebug.frameCounter.load();
+			HLE_SurfCamTick(hCPU);
+			std::lock_guard lock(sCamMutex);
+			sPendingPitch = 0.0; // no pitch control on this camera
+		}
+
+		void HLE_SurfCamPitch(PPCInterpreter_t* hCPU)
+		{
+			const uint32 cam = hCPU->gpr[3];
+			const SurfCamKind& kind = kSurfCamKinds[hCPU->gpr[4] == 1 ? 1 : 0];
+			if (memory_isAddressRangeAccessible(cam + kind.stateOffset, 1) && memory_readU8(cam + kind.stateOffset) == kind.manualState)
+			{
+				const double pitch = TakePending(sPendingPitch, sPitchAge);
+				if (pitch != 0.0)
+					hCPU->fpr[1].fpr = (double)(float)std::clamp(hCPU->fpr[1].fpr + kGamePitchSign * pitch, -80.0, 80.0);
+			}
+			hCPU->instructionPointer = hCPU->spr.LR;
+		}
+
+		void HLE_SurfCamYaw(PPCInterpreter_t* hCPU)
+		{
+			const double yaw = TakePending(sPendingYaw, sYawAge);
+			if (yaw != 0.0)
+				hCPU->fpr[1].fpr = (double)(float)(hCPU->fpr[1].fpr + kGameYawSign * yaw);
+			hCPU->instructionPointer = hCPU->spr.LR;
+		}
+
 		void HLE_MagnetCamTick(PPCInterpreter_t* hCPU)
 		{
 			const uint32 pose = hCPU->gpr[3], cam = hCPU->gpr[4];
@@ -1029,6 +1107,11 @@ namespace pce::Input
 		osLib_addFunction("coreinit", "PCE_AimPitch", HLE_AimPitch);
 		osLib_addFunction("coreinit", "PCE_RuneCamTick", HLE_RuneCamTick);
 		osLib_addFunction("coreinit", "PCE_LockCamTick", HLE_LockCamTick);
+		osLib_addFunction("coreinit", "PCE_SurfCamTick", HLE_SurfCamTick);
+		osLib_addFunction("coreinit", "PCE_SealCamTick", HLE_SealCamTick);
+		osLib_addFunction("coreinit", "PCE_FallCamTick", HLE_FallCamTick);
+		osLib_addFunction("coreinit", "PCE_SurfCamPitch", HLE_SurfCamPitch);
+		osLib_addFunction("coreinit", "PCE_SurfCamYaw", HLE_SurfCamYaw);
 	}
 
 	void Start()
@@ -1213,10 +1296,10 @@ namespace pce::Input
 	std::string CameraAges()
 	{
 		const uint32 f = sDebug.frameCounter.load();
-		return fmt::format("cam {} aim {} scope {} glide {} climbcam {} talkcam {} magnet {} horsecam {} runecam {} lockcam {}", f - sCamTickFrame.load(),
+		return fmt::format("cam {} aim {} scope {} glide {} climbcam {} talkcam {} magnet {} horsecam {} runecam {} lockcam {} surfcam {} sealcam {} fallcam {}", f - sCamTickFrame.load(),
 						   f - sAimTickFrame.load(), f - sScopeTickFrame.load(), f - sGlideTickFrame.load(), f - sClimbCamFrame.load(),
 						   f - sTalkCamFrame.load(), f - sMagnetFrame.load(), f - sHorseCamFrame.load(), f - sRuneCamFrame.load(),
-						   f - sLockCamFrame.load());
+						   f - sLockCamFrame.load(), f - sSurfCamFrame.load(), f - sSealCamFrame.load(), f - sFallCamFrame.load());
 	}
 
 	void NoteVPADCaller(uint32 lr, uint32 length)

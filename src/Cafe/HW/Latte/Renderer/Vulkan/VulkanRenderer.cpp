@@ -1411,6 +1411,10 @@ VkDeviceCreateInfo VulkanRenderer::CreateDeviceCreateInfo(const std::vector<VkDe
 	}
 	if (m_featureControl.deviceExtensions.pipeline_robustness)
 		used_extensions.emplace_back(VK_EXT_PIPELINE_ROBUSTNESS_EXTENSION_NAME);
+#if BOOST_OS_WINDOWS
+	if (m_featureControl.deviceExtensions.full_screen_exclusive)
+		used_extensions.emplace_back(VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME);
+#endif
 	if (m_pceFsrDevice)
 	{
 		// Zelda on PC: the FidelityFX runtime calls the KHR entry points of these when the device lists them
@@ -1532,6 +1536,9 @@ bool VulkanRenderer::CheckDeviceExtensionSupport(const VkPhysicalDevice device, 
 	info.deviceExtensions.attachment_feedback_loop_dynamic_state = isExtensionAvailable(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_EXTENSION_NAME);
 	// dynamic rendering doesn't provide any benefits for us right now. Driver implementations are very unoptimized as of Feb 2022
 	info.deviceExtensions.present_wait = isExtensionAvailable(VK_KHR_PRESENT_WAIT_EXTENSION_NAME) && isExtensionAvailable(VK_KHR_PRESENT_ID_EXTENSION_NAME);
+#if BOOST_OS_WINDOWS
+	info.deviceExtensions.full_screen_exclusive = info.instanceExtensions.surface_capabilities2 && isExtensionAvailable(VK_EXT_FULL_SCREEN_EXCLUSIVE_EXTENSION_NAME);
+#endif
 
 	// check for validation layers and frame debuggers
 	info.usingDebugMarkerTool = false;
@@ -1629,6 +1636,10 @@ std::vector<const char*> VulkanRenderer::CheckInstanceExtensionSupport(FeatureCo
 	info.instanceExtensions.debug_utils = isExtensionAvailable(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 	if (info.instanceExtensions.debug_utils)
 		enabledInstanceExtensions.emplace_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+	// Zelda on PC: exclusive fullscreen (VK_EXT_full_screen_exclusive depends on it)
+	info.instanceExtensions.surface_capabilities2 = isExtensionAvailable(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
+	if (info.instanceExtensions.surface_capabilities2)
+		enabledInstanceExtensions.emplace_back(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
 	return enabledInstanceExtensions;
 }
 
@@ -3096,6 +3107,9 @@ bool VulkanRenderer::UpdateSwapchainProperties(bool mainWindow)
 	// Zelda on PC: FSR 3 frame generation switched on / off
 	if (mainWindow && chainInfo.m_ffx != (SwapchainInfoVk::s_ffxWanted && FSR_Supported()))
 		stateChanged = true;
+	// Zelda on PC: display mode (borderless / exclusive fullscreen) switched
+	if (mainWindow && chainInfo.m_fsMode != SwapchainInfoVk::WantedFullscreenMode())
+		stateChanged = true;
 
 	int width, height;
 	if (mainWindow)
@@ -3121,6 +3135,8 @@ bool VulkanRenderer::UpdateSwapchainProperties(bool mainWindow)
 
 	chainInfo.m_shouldRecreate = false;
 	chainInfo.m_vsyncState = configValue;
+	if (mainWindow)
+		chainInfo.AcquireExclusive();
 	return true;
 }
 
@@ -3181,11 +3197,11 @@ void VulkanRenderer::SwapBuffer(bool mainWindow)
 	}
 
 	VkResult result = chainInfo.m_ffx ? VulkanFFX::Get().QueuePresent(m_presentQueue, &presentInfo) : vkQueuePresentKHR(m_presentQueue, &presentInfo);
-	if (result < 0 && result != VK_ERROR_OUT_OF_DATE_KHR)
+	if (result < 0 && result != VK_ERROR_OUT_OF_DATE_KHR && !SwapchainInfoVk::IsExclusiveLost(result))
 	{
 		throw std::runtime_error(fmt::format("Failed to present image: {}", result));
 	}
-	if(result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR)
+	if(result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR || SwapchainInfoVk::IsExclusiveLost(result))
 		chainInfo.m_shouldRecreate = true;
 
 	if(result >= 0)

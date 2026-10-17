@@ -217,7 +217,11 @@ namespace pce
 			// "CPUPinning" was the key while the option was on by default: it is not read any more, so everybody starts
 			// with the new default
 			Get(m, "Graphics", "PinThreads", s.cpuPinning);
-			Get(m, "Display", "Fullscreen", s.fullscreen);
+			bool fullscreen = true; // until 1.2.2: Fullscreen=1 was borderless, 0 windowed
+			Get(m, "Display", "Fullscreen", fullscreen);
+			s.displayMode = fullscreen ? 1 : 0;
+			Get(m, "Display", "DisplayMode", s.displayMode);
+			s.displayMode = std::clamp(s.displayMode, 0, 2);
 			Get(m, "Audio", "Volume", s.volume);
 			s.volume = std::clamp(s.volume, 0.0f, 100.0f);
 			Get(m, "Audio", "Speakers", s.speakers);
@@ -297,7 +301,7 @@ namespace pce
 		o << "PinThreads=" << b(s.cpuPinning) << "\n";
 		o << "FrameGeneration=" << s.frameGeneration << "\n\n";
 		o << "[Display]\n";
-		o << "Fullscreen=" << b(s.fullscreen) << "\n\n";
+		o << "DisplayMode=" << s.displayMode << "\n\n";
 		o << "[Audio]\n";
 		o << "Volume=" << s.volume << "\n";
 		o << "Speakers=" << s.speakers << "\n";

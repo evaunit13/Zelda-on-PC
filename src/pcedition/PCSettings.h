@@ -135,7 +135,7 @@ namespace pce
 		std::string audioDevice;            // identifier of the output device (empty: the system's default)
 
 		// display
-		bool fullscreen = true;             // borderless fullscreen
+		int displayMode = 1;                // 0 windowed, 1 borderless (a window covering the screen), 2 exclusive fullscreen
 
 		// paths
 		std::string gamePath;               // folder containing the base game (auto-detected if empty)

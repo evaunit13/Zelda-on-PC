@@ -144,6 +144,10 @@ public:
 	bool m_pce_cursor_captured = false;
 	bool m_pce_was_foreground = false;      // the game window was the last real foreground window
 	unsigned long long m_pce_no_foreground_since = 0;
+	void ApplyPCEDisplayMode(int mode);
+	int m_pce_display_mode = -1;            // display mode the window is in (-1: none yet)
+	int m_pce_last_fullscreen_mode = 1;     // borderless or exclusive: where Alt+Enter goes back to
+	unsigned long long m_pce_settings_rev = 0;
 
 	uintptr_t GetRenderCanvasHWND();
 

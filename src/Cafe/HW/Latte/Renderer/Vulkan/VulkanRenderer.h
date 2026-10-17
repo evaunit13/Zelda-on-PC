@@ -246,6 +246,7 @@ public:
 	void FSR_RequestDump(const std::string& path, int count) override;
 	bool FSR_Supported() const;
 	void FSR_SetWanted(bool wanted) override;
+	bool FullScreenExclusiveSupported() const { return m_featureControl.deviceExtensions.full_screen_exclusive; }
 	bool FSR_IsRunning() override;
 	uint64 FSR_PresentCount() override;
 	bool FSR_PrepareFrame(const FSRFrameParams& p) override;
@@ -481,6 +482,7 @@ private:
 			bool present_wait = false; // VK_KHR_present_wait
 			bool depth_clip_enable = false; // VK_EXT_depth_clip_enable
 			bool pipeline_robustness = false; // VK_EXT_pipeline_robustness
+			bool full_screen_exclusive = false; // VK_EXT_full_screen_exclusive (Zelda on PC: exclusive fullscreen)
 			bool attachment_feedback_loop_layout = false; // VK_EXT_attachment_feedback_loop_layout
 			bool attachment_feedback_loop_dynamic_state = false; // VK_EXT_attachment_feedback_loop_dynamic_state (this is forced to false if VK_EXT_attachment_feedback_loop_layout is not supported)
 		}deviceExtensions;
@@ -493,6 +495,7 @@ private:
 		struct
 		{
 			bool debug_utils = false; // VK_EXT_DEBUG_UTILS
+			bool surface_capabilities2 = false; // VK_KHR_get_surface_capabilities2 (needed by VK_EXT_full_screen_exclusive)
 		}instanceExtensions;
 
 		struct

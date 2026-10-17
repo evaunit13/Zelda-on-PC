@@ -35,4 +35,9 @@ namespace pce::Graphics
 	bool RestartPending();
 	// directory of the PC Edition graphic pack (patches + content replacements)
 	fs::path GetEditionPackDir();
+
+	// display mode the main window is in (Settings::displayMode: 0 windowed, 1 borderless, 2 exclusive fullscreen); set by
+	// the window, read by the swapchain (exclusive fullscreen is a property of the swapchain)
+	void SetDisplayModeApplied(int mode);
+	int GetDisplayModeApplied();
 }

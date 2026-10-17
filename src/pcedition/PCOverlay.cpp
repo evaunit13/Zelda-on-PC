@@ -337,6 +337,9 @@ namespace pce::Overlay
 			}
 			{
 				Page p{"Graphics"};
+				p.items.push_back(choice("Display Mode", &sEdit.displayMode, {"Windowed", "Borderless", "Fullscreen"},
+										 "Borderless: a window covering the screen, quick to switch away from. Fullscreen: the game takes the "
+										 "display for itself, which can lower input lag. Alt+Enter switches to Windowed and back."));
 				{
 					Item it = choice("Aspect Ratio", &sEdit.aspectRatio, Graphics::GetAspectOptions(),
 									 "Shape of the picture. Automatic: 21:9 or 32:9 on such a display, 16:9 on every other. With another "

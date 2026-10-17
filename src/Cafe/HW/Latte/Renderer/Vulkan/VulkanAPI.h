@@ -199,6 +199,12 @@ VKFUNC_DEVICE(vkCmdSetAttachmentFeedbackLoopEnableEXT);
 // khr_present_wait
 VKFUNC_DEVICE(vkWaitForPresentKHR);
 
+// ext_full_screen_exclusive (Zelda on PC: exclusive fullscreen)
+#if BOOST_OS_WINDOWS
+VKFUNC_DEVICE(vkAcquireFullScreenExclusiveModeEXT);
+VKFUNC_DEVICE(vkReleaseFullScreenExclusiveModeEXT);
+#endif
+
 // query
 VKFUNC_DEVICE(vkCreateQueryPool);
 VKFUNC_DEVICE(vkDestroyQueryPool);

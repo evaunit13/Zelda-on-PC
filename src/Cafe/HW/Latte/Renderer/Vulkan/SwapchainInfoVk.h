@@ -59,6 +59,16 @@ struct SwapchainInfoVk
 	bool mainWindow{};
 	bool m_ffx = false; // Zelda on PC: FSR 3 frame interpolation swapchain (VulkanFFX)
 	static inline bool s_ffxWanted = false; // main window should use it (set from the settings)
+	// Zelda on PC: exclusive fullscreen. The display mode the swapchain was made for (0 none, 1 borderless,
+	// 2 exclusive), and the one the window is in now.
+	int m_fsMode = 0;
+	bool m_exclusiveAcquired = false;
+	uint64 m_exclusiveRetryTick = 0;
+	int m_exclusiveLastResult = 1;
+	static int WantedFullscreenMode();
+	static bool IsExclusiveLost(VkResult result);
+	// exclusive mode: takes the display while the game window is in front (again after it was lost)
+	void AcquireExclusive();
 
 	bool m_shouldRecreate = false;
 	VSync m_vsyncState = VSync::Immediate;
