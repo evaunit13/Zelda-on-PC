@@ -4,8 +4,8 @@
 # ([Game] Path=...) or a "game" folder next to ZeldaOnPC.exe and it runs from anywhere.
 #
 # Requirements: Inno Setup 6.3 or newer (https://jrsoftware.org/isinfo.php) and a finished build (or pass -Build).
-# Usage: powershell -ExecutionPolicy Bypass -File tools\package.ps1 [-Version 1.2.2] [-Build] [-StageOnly]
-param([string]$Version = "1.2.2", [switch]$Build, [switch]$StageOnly)
+# Usage: powershell -ExecutionPolicy Bypass -File tools\package.ps1 [-Version 1.2.3] [-Build] [-StageOnly]
+param([string]$Version = "1.2.3", [switch]$Build, [switch]$StageOnly)
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot

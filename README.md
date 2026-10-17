@@ -51,7 +51,8 @@ HUD**, so the interface is drawn on top at full sharpness instead of being inter
 
 - **1:1 mouse camera.** Raw input, no acceleration, no smoothing. The mouse does not pretend to be an analog stick: the
   game's camera code is patched to take the rotation directly, in the third person camera, with a target locked on, on
-  horseback, while aiming the bow, in the scope, in the camera rune, while climbing and in conversations.
+  horseback, while aiming the bow, in the scope, in the camera rune, while climbing, in conversations, while shield
+  surfing, behind a sand seal and swimming up a waterfall.
 - **Every action rebindable**, two keys per action, with conflict highlighting.
 - **Weapons on the mouse wheel**, arrows while aiming. Hold `1` – `4` for the weapon, bow, shield and rune selectors.
   As an option (`Esc` → **Camera**), the movement keys step through an open selector and move the cursor in the
@@ -81,7 +82,8 @@ the game's tutorial tips show your keys where the game has pictures of the GameP
 ### Plays like a PC game
 
 - Starts directly into the game: no emulator window, no game list, no first-run wizard.
-- Borderless fullscreen (`Alt+Enter` toggles a window), cursor captured while playing and released in menus.
+- Display mode: windowed, borderless or exclusive fullscreen (`Esc` → **Graphics**, `Alt+Enter` toggles a window),
+  cursor captured while playing and released in menus.
 - **Settings in the game's own pause menu.** `Esc` opens it on its System page (save, load, options), where the PC
   settings take the place of the game's picture of the GamePad: camera, controls, motion, graphics, audio, game.
   Mouse or keyboard (`→` to go in, `Esc` to come out). On the title screen `Esc` opens them on their own. They are
