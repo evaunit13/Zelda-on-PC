@@ -383,6 +383,8 @@ MainWindow::MainWindow()
 	#endif
 
 	Bind(wxEVT_OPEN_GRAPHIC_PACK, &MainWindow::OnGraphicWindowOpen, this);
+	if (pce::IsActive())
+		Bind(wxEVT_CHAR_HOOK, &MainWindow::OnPCECharHook, this);
 	Bind(wxEVT_LAUNCH_GAME, &MainWindow::OnLaunchFromFile, this);
 
 	if (LaunchSettings::GDBStubEnabled())
@@ -1603,6 +1605,24 @@ void MainWindow::OnKeyUp(wxKeyEvent& event)
 	HotkeySettings::CaptureInput(event);
 }
 
+// Alt+Enter: Windowed <-> the last full screen mode. On the frame (char hook): it gets the key wherever the keyboard focus
+// is, the frame itself or the render canvas.
+void MainWindow::OnPCECharHook(wxKeyEvent& event)
+{
+	if (event.AltDown() && (event.GetKeyCode() == WXK_RETURN || event.GetKeyCode() == WXK_NUMPAD_ENTER))
+	{
+		if (event.IsAutoRepeat())
+			return;
+		const int mode = m_pce_display_mode != 0 ? 0 : m_pce_last_fullscreen_mode;
+		ApplyPCEDisplayMode(mode);
+		if (!pce::ForceWindowed())
+			pce::UpdateSettings([mode](pce::Settings& s) { s.displayMode = mode; });
+		m_pce_settings_rev = pce::GetSettingsRevision();
+		return;
+	}
+	event.Skip();
+}
+
 void MainWindow::OnKeyDown(wxKeyEvent& event)
 {
 #if defined(__APPLE__)
@@ -1616,14 +1636,6 @@ void MainWindow::OnKeyDown(wxKeyEvent& event)
     if (event.AltDown() && event.GetKeyCode() == WXK_F4)
     {
         Close(true);
-    }
-    else if (pce::IsActive() && event.AltDown() && (event.GetKeyCode() == WXK_RETURN || event.GetKeyCode() == WXK_NUMPAD_ENTER))
-    {
-        const int mode = m_pce_display_mode != 0 ? 0 : m_pce_last_fullscreen_mode;
-        ApplyPCEDisplayMode(mode);
-        if (!pce::ForceWindowed())
-            pce::UpdateSettings([mode](pce::Settings& s) { s.displayMode = mode; });
-        m_pce_settings_rev = pce::GetSettingsRevision();
     }
 #endif
     else
@@ -1898,6 +1910,7 @@ void MainWindow::SetFullScreen(bool state)
 		g_window_info.is_fullscreen = state;
 		if (m_fullscreenMenuItem)
 			m_fullscreenMenuItem->Check(state);
+		const bool wasVisible = ::IsWindowVisible(GetHWND()) != FALSE;
 		this->ShowFullScreen(state, wxFULLSCREEN_ALL);
 		m_menu_visible = false;
 		if (!state)
@@ -1906,6 +1919,15 @@ void MainWindow::SetFullScreen(bool state)
 			wxRect desk = GetDesktopRect();
 			SetClientSize(desk.GetWidth() * 4 / 5, desk.GetHeight() * 4 / 5);
 			Centre();
+			// Leaving full screen restores the window style saved when it entered it. With the game started in full
+			// screen that was before the window was first shown: the restored style is a hidden window, and only the
+			// last picture stays on the desktop as a grey rectangle. Show it again.
+			if (wasVisible && !::IsWindowVisible(GetHWND()))
+			{
+				::ShowWindow(GetHWND(), SW_SHOWNORMAL);
+				Show(true);
+				Raise();
+			}
 		}
 		return;
 	}
