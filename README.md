@@ -25,6 +25,7 @@ installer, and none are downloaded.
 | Controls | Controller, or keys mapped to controller buttons | Mouse and keyboard made for the game, 1:1 mouse camera |
 | On-screen prompts | The buttons of the Wii U GamePad | Your own keys and mouse buttons |
 | Menus | Stick and buttons | Mouse: hover, click, drag, wheel |
+| Map | Controller pan and zoom | Drag to pan, wheel to zoom, **interactive map companion** with live completion tracking |
 | Frame rate | FPS++ graphic pack, set up by hand | Built in, **plus AMD FSR 3 frame generation** |
 | Settings | Emulator dialogs and graphic packs | In the game's own pause menu (`Esc`) |
 
@@ -76,6 +77,7 @@ the game's tutorial tips show your keys where the game has pictures of the GameP
 - **Inventory:** the selection follows the pointer, click to use an item, click the category icons and the page
   arrows, wheel to change category, drag to rotate Link.
 - **Map:** drag to pan, wheel to zoom, click a spot to move the cursor there and confirm (pins, fast travel).
+- **Interactive World Map:** an interactive companion built directly into the Sheikah Slate map (`M`). Shows over 20,000 markers for Shrines, Towers, Korok Seeds, Treasure Chests, Hinox, Stone Talus, Molduga, Lynels, and more. Filter categories, search for specific items, auto-hide collected items from your live save, and press `Enter` to center the map on any marker. Toggle on/off anytime with `H` or in `Esc` → **Game**.
 - **Conversations:** click the answer.
 - **Adventure Log, title screen, save / load, system menus:** click what you want.
 
@@ -154,7 +156,7 @@ All of these are defaults. Change them in `Esc` → **Controls**.
 | Lock on / shield | `Q` / Mouse 4 | | Scope | Middle mouse / `Z` |
 | Action / interact | `E` | | Whistle | `X` |
 | Use rune | `F` | | Throw weapon | `R` |
-| Inventory: previous / next page | `Page Up` / `Page Down`, or `A` / `D` | | | |
+| Inventory: previous / next page | `Page Up` / `Page Down`, or `A` / `D` | | Interactive map toggle | `H` (on map) |
 
 Controllers are not handled by this build. For controller play, the game runs just as well in regular Cemu.
 
