@@ -1905,6 +1905,29 @@ namespace pce::UI
 		return true;
 	}
 
+	bool SetMapWorldCenter(const PointerSnapshot& ps, float wx, float wz)
+	{
+		if (!ps.mapCtrl || !std::isfinite(wx) || !std::isfinite(wz))
+			return false;
+		const float sx = -2.0f * wx;
+		const float sy = 2.0f * wz;
+		for (uint32 off : {0x20u, 0x30u})
+		{
+			memory_writeFloat(ps.mapCtrl + off, sx);
+			memory_writeFloat(ps.mapCtrl + off + 4, sy);
+		}
+		const uint32 cursor = ps.mapCtrl - 0x648 + 0x3160;
+		if (ValidPtr(cursor, 0x10))
+		{
+			for (uint32 off : {0x0u, 0x8u})
+			{
+				memory_writeFloat(cursor + off, -sx);
+				memory_writeFloat(cursor + off + 4, -sy);
+			}
+		}
+		return true;
+	}
+
 	int PointerSnapshot::At(float x, float y, uint32 onlyGroup) const
 	{
 		int best = -1;

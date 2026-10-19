@@ -2180,6 +2180,74 @@ void VulkanRenderer::ImguiEnd()
 	ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), m_state.currentCommandBuffer);
 	vkCmdEndRenderPass(m_state.currentCommandBuffer);
 
+	if (m_screenshot_requested && m_mainSwapchainInfo && m_mainSwapchainInfo->IsValid())
+	{
+		const int width = (int)m_mainSwapchainInfo->getExtent().width;
+		const int height = (int)m_mainSwapchainInfo->getExtent().height;
+		const VkFormat fmt = m_mainSwapchainInfo->m_surfaceFormat.format;
+		const VkImage swapImg = m_mainSwapchainInfo->m_swapchainImages[m_mainSwapchainInfo->swapchainImageIndex];
+		const uint32 size = (uint32)(4 * width * height);
+		VkBuffer buffer = VK_NULL_HANDLE;
+		VkDeviceMemory bufferMemory = VK_NULL_HANDLE;
+		void* bufferPtr = nullptr;
+		if (width > 0 && height > 0 &&
+			memoryManager->CreateBuffer(size, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+										VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT | VK_MEMORY_PROPERTY_HOST_CACHED_BIT,
+										buffer, bufferMemory) &&
+			vkMapMemory(m_logicalDevice, bufferMemory, 0, VK_WHOLE_SIZE, 0, &bufferPtr) == VK_SUCCESS)
+		{
+			VkImageMemoryBarrier b{};
+			b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+			b.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+			b.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+			b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+			b.image = swapImg;
+			b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+			b.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+			b.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+			vkCmdPipelineBarrier(m_state.currentCommandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+
+			VkBufferImageCopy region{};
+			region.bufferRowLength = width;
+			region.bufferImageHeight = height;
+			region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+			region.imageExtent = {(uint32)width, (uint32)height, 1};
+			vkCmdCopyImageToBuffer(m_state.currentCommandBuffer, swapImg, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &region);
+
+			b.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+			b.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+			b.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+			b.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
+			vkCmdPipelineBarrier(m_state.currentCommandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
+
+			SubmitCommandBuffer();
+			WaitCommandBufferFinished(GetCurrentCommandBufferId());
+
+			const bool bgr = (fmt == VK_FORMAT_B8G8R8A8_UNORM || fmt == VK_FORMAT_B8G8R8A8_SRGB);
+			std::vector<uint8> rgb_data;
+			rgb_data.reserve((size_t)3 * width * height);
+			const uint8* px = (const uint8*)bufferPtr;
+			for (uint32 off = 0; off < size; off += 4)
+			{
+				rgb_data.push_back(px[off + (bgr ? 2 : 0)]);
+				rgb_data.push_back(px[off + 1]);
+				rgb_data.push_back(px[off + (bgr ? 0 : 2)]);
+			}
+			vkUnmapMemory(m_logicalDevice, bufferMemory);
+			vkFreeMemory(m_logicalDevice, bufferMemory, nullptr);
+			vkDestroyBuffer(m_logicalDevice, buffer, nullptr);
+			SaveScreenshot(rgb_data, width, height, true);
+		}
+		else
+		{
+			if (bufferMemory)
+				vkFreeMemory(m_logicalDevice, bufferMemory, nullptr);
+			if (buffer)
+				vkDestroyBuffer(m_logicalDevice, buffer, nullptr);
+		}
+	}
+
 	// restore viewport and scissor box
 	vkCmdSetViewport(m_state.currentCommandBuffer, 0, 1, &m_state.currentViewport);
 	vkCmdSetScissor(m_state.currentCommandBuffer, 0, 1, &m_state.currentScissorRect);

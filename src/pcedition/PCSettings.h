@@ -144,6 +144,15 @@ namespace pce
 		std::string language = "en";        // text language (code of pce::GetGameLanguages), applied when the game starts
 		int temperatureUnit = 0;            // 0 as the game decides (Fahrenheit for US English), 1 Celsius, 2 Fahrenheit
 
+		// interactive map (Sheikah Slate map overlay)
+		bool mapEnabled = true;             // master toggle: completely enable or disable the interactive map
+		bool mapOverlay = true;             // show the interactive map overlay on the world map
+		bool mapPanelOpen = true;           // filter & search panel expanded on the map screen
+		bool mapAutoHide = true;            // auto-hide claimed chests, completed shrines, activated towers, collected koroks
+		bool mapDimClaimed = false;         // when auto-hide is off, dim claimed markers instead of showing at full opacity
+		bool mapMasterMode = false;         // include Master Mode exclusive spawns and chests
+		uint32 mapCategories = 0x001Fu;     // bitmask of enabled categories (default: Shrines, Towers, Koroks, Chests, Bosses)
+
 		std::array<Binding, kActionCount> bindings;
 
 		Binding& bind(Action a) { return bindings[(size_t)a]; }

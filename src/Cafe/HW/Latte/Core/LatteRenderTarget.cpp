@@ -1558,7 +1558,8 @@ void LatteRenderTarget_copyToBackbuffer(LatteTextureView* textureView, bool isPa
 	}
 	cemu_assert(shader);
 	g_renderer->DrawBackbufferQuad(textureView, shader, filter==LatteTextureView::MagFilter::kLinear, imageX, imageY, imageWidth, imageHeight, isPadView, clearBackground);
-	g_renderer->HandleScreenshotRequest(textureView, isPadView);
+	if (!pce::IsActive())
+		g_renderer->HandleScreenshotRequest(textureView, isPadView);
 	if (!isPadView)
 		LatteFSR_AfterBackbuffer(imageX, imageY, imageWidth, imageHeight);
 	if (!isPadView && !(pce::IsActive() && pce::Overlay::IsGamePaused()))

@@ -46,6 +46,7 @@ void Renderer::Initialize()
 		ImGuiIO& io = ImGui::GetIO();
 		io.WantSaveIniSettings = false;
 		io.IniFilename = nullptr;
+		io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
 	};
 
 	imguiTVContext = ImGui::CreateContext(imguiFontAtlas);

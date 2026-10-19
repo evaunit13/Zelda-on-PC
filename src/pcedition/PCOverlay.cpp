@@ -7,6 +7,7 @@
 #include "pcedition/PCUI.h"
 #include "pcedition/PCKeys.h"
 #include "pcedition/PCPrompts.h"
+#include "pcedition/PCMapIcons.h"
 
 #include <windows.h>
 #include <commdlg.h>
@@ -173,10 +174,17 @@ namespace pce::Overlay
 		{
 			if (!sAudioDeviceIds.empty())
 				sEdit.audioDevice = sAudioDeviceIds[std::clamp(sAudioDeviceIndex, 0, (int)sAudioDeviceIds.size() - 1)];
+			const Settings old = GetSettings();
 			Settings copy = sEdit;
 			UpdateSettings([&](Settings& s) { s = copy; });
-			Graphics::ApplyLive();
-			ApplyAudioLive(copy);
+			const bool gfxChanged = old.fpsLimit != copy.fpsLimit || old.vsync != copy.vsync ||
+			                        old.antiAliasing != copy.antiAliasing || old.resolutionPreset != copy.resolutionPreset ||
+			                        old.shadowPreset != copy.shadowPreset || old.aspectRatio != copy.aspectRatio ||
+			                        old.ultrawideHud != copy.ultrawideHud || old.frameGeneration != copy.frameGeneration;
+			if (gfxChanged)
+				Graphics::ApplyLive();
+			if (old.volume != copy.volume || old.speakers != copy.speakers || old.audioDevice != copy.audioDevice)
+				ApplyAudioLive(copy);
 		}
 
 		// ---- amiibo: files of the player's amiibo (dumps of their figures) in <data>/amiibo; when the game looks for an
@@ -410,6 +418,12 @@ namespace pce::Overlay
 				p.items.push_back(choice("Temperature Unit", &sEdit.temperatureUnit, {"Automatic", "Celsius", "Fahrenheit"},
 										 "Unit of the temperature on the map. Automatic: as the game decides (Fahrenheit for US English, Celsius "
 										 "otherwise)."));
+				p.items.push_back(toggle("Interactive Map", &sEdit.mapEnabled,
+										 "Completely enable or disable the interactive map and all its UI on the Sheikah Slate world map. (Shortcut: H on map)"));
+				p.items.push_back(toggle("Interactive Map Overlay", &sEdit.mapOverlay,
+										 "Shows interactive markers, item search and category filters directly on the Sheikah Slate world map."));
+				p.items.push_back(toggle("Map: Auto-Hide Claimed", &sEdit.mapAutoHide,
+										 "Automatically hides opened treasure chests, completed shrines, activated towers and collected Korok seeds."));
 				p.items.push_back(header("amiibo"));
 				p.items.push_back(button("Add amiibo File...", "Copies the .bin file of an amiibo (a dump of your figure) into the game's amiibo folder. "
 															   "When the amiibo rune looks for an amiibo, you choose one of them. The rune is turned on in the "
@@ -1669,6 +1683,11 @@ namespace pce::Overlay
 		}
 	}
 
+	ImFont* GetTitleFont() { return sFonts.title ? sFonts.title : ImGui::GetFont(); }
+	ImFont* GetItemFont() { return sFonts.item ? sFonts.item : ImGui::GetFont(); }
+	ImFont* GetSmallFont() { return sFonts.small ? sFonts.small : ImGui::GetFont(); }
+	float GetFontHeight() { return sFonts.height > 0 ? (float)sFonts.height : 18.0f; }
+
 	void Render()
 	{
 		DrawHudPrompts();
@@ -1702,6 +1721,11 @@ namespace pce::Overlay
 		if (embedded)
 		{
 			RenderEmbedded(panel, now);
+			sMouseWasDown = ImGui::GetIO().MouseDown[0];
+			return;
+		}
+		if (!sOpen.load() && sFonts.item && MapIcons::Render(now, dt))
+		{
 			sMouseWasDown = ImGui::GetIO().MouseDown[0];
 			return;
 		}

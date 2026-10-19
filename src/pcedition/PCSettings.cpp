@@ -231,6 +231,15 @@ namespace pce
 			Get(m, "Game", "Language", s.language);
 			Get(m, "Game", "TemperatureUnit", s.temperatureUnit);
 			s.temperatureUnit = std::clamp(s.temperatureUnit, 0, 2);
+			Get(m, "Map", "Enabled", s.mapEnabled);
+			Get(m, "Map", "Overlay", s.mapOverlay);
+			Get(m, "Map", "PanelOpen", s.mapPanelOpen);
+			Get(m, "Map", "AutoHide", s.mapAutoHide);
+			Get(m, "Map", "DimClaimed", s.mapDimClaimed);
+			Get(m, "Map", "MasterMode", s.mapMasterMode);
+			int mapCats = (int)s.mapCategories;
+			Get(m, "Map", "Categories", mapCats);
+			s.mapCategories = (uint32)mapCats & 0x7FFu;
 			for (size_t i = 0; i < kActionCount; i++)
 			{
 				std::string v;
@@ -310,6 +319,14 @@ namespace pce
 		o << "Path=" << s.gamePath << "\n";
 		o << "Language=" << s.language << "\n";
 		o << "TemperatureUnit=" << s.temperatureUnit << "\n\n";
+		o << "[Map]\n";
+		o << "Enabled=" << b(s.mapEnabled) << "\n";
+		o << "Overlay=" << b(s.mapOverlay) << "\n";
+		o << "PanelOpen=" << b(s.mapPanelOpen) << "\n";
+		o << "AutoHide=" << b(s.mapAutoHide) << "\n";
+		o << "DimClaimed=" << b(s.mapDimClaimed) << "\n";
+		o << "MasterMode=" << b(s.mapMasterMode) << "\n";
+		o << "Categories=" << s.mapCategories << "\n\n";
 		o << "[Controls]\n";
 		for (size_t i = 0; i < kActionCount; i++)
 		{

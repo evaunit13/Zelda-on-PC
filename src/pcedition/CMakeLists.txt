@@ -25,6 +25,8 @@ add_library(CemuPCEdition
 	PCProfiler.h
 	PCIcon.cpp
 	PCIcon.h
+	PCMapIcons.cpp
+	PCMapIcons.h
 )
 
 set_property(TARGET CemuPCEdition PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")

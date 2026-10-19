@@ -9,6 +9,7 @@
 #include "pcedition/PCMenus.h"
 #include "pcedition/PCProfiler.h"
 #include "pcedition/PCGraphics.h"
+#include "pcedition/PCMapIcons.h"
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -222,6 +223,8 @@ namespace pce::DevBridge
 					return "pong";
 				if (c == "running")
 					return CafeSystem::IsTitleRunning() ? "1" : "0";
+				if (c == "mapicons")
+					return MapIcons::DebugCommand(a);
 				if (c == "frame")
 					return std::to_string(dbg.frameCounter.load());
 				if (c == "stick" && a.size() >= 2)

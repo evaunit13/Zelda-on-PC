@@ -56,8 +56,9 @@ namespace pce
 		// the settings have the keyboard (and the wheel): the game gets no input meanwhile
 		void SetEmbeddedFocus(bool focus);
 		bool EmbeddedFocus();
-		// the mouse is over the settings: the wheel scrolls them instead of switching the menu's pages
+		// the mouse is over the settings / map panel: the wheel scrolls them instead of switching the menu's pages
 		void SetPanelHover(bool hover);
+		bool PanelHover();
 		// the PC settings key during play: the pause menu opens on its System page (the PC menu when it cannot open)
 		void RequestSystemMenu();
 		// keys held right now count for the game only after they have been released

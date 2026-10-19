@@ -2,6 +2,8 @@
 
 // Zelda on PC - in-game settings menu (drawn with ImGui over the game image).
 
+struct ImFont;
+
 namespace pce::Overlay
 {
 	void SetOpen(bool open);
@@ -26,4 +28,10 @@ namespace pce::Overlay
 	void ReleaseForShutdown();
 	// loading screen indicator (inside an ImGui frame), progress 0..1
 	void DrawLoadingIndicator(float progress);
+
+	// font access for embedded PC menus & map overlays
+	ImFont* GetTitleFont();
+	ImFont* GetItemFont();
+	ImFont* GetSmallFont();
+	float GetFontHeight();
 }

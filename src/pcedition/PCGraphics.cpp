@@ -63,13 +63,18 @@ namespace pce::Graphics
 		}
 
 		// select the first preset of a category whose name starts with the given prefix
-		bool SelectPreset(const std::shared_ptr<GraphicPack2>& gp, const std::string& category, const std::string& namePrefix)
+		bool SelectPreset(const std::shared_ptr<GraphicPack2>& gp, const std::string& category, const std::string& namePrefix, bool* changed = nullptr)
 		{
 			for (auto& p : gp->GetPresets())
 			{
 				if (p->category == category && boost::istarts_with(p->name, namePrefix))
 				{
-					gp->SetActivePreset(category, p->name, false);
+					if (gp->GetActivePreset(category) != p->name)
+					{
+						gp->SetActivePreset(category, p->name, false);
+						if (changed)
+							*changed = true;
+					}
 					return true;
 				}
 			}
@@ -500,7 +505,7 @@ blr
 )";
 		}
 
-		void SetPacksFromSettings(const Settings& s, bool live)
+		void SetPacksFromSettings(const Settings& s, bool live, bool* fpsChanged = nullptr, bool* gfxChanged = nullptr)
 		{
 			// resolution, shadows, anti-aliasing
 			if (auto gfx = FindPack("BreathOfTheWild/Graphics"))
@@ -512,29 +517,29 @@ blr
 				if (!live)
 				{
 					static const char* kAspect[] = {"16:9", "16:9", "16:10", "21:9", "32:9"};
-					SelectPreset(gfx, "Aspect Ratio", kAspect[aspect]);
-					SelectPreset(gfx, "Resolution", fmt::format("{}x{}", res[ri].width, res[ri].height));
+					SelectPreset(gfx, "Aspect Ratio", kAspect[aspect], gfxChanged);
+					SelectPreset(gfx, "Resolution", fmt::format("{}x{}", res[ri].width, res[ri].height), gfxChanged);
 					if (aspect >= 3)
-						SelectPreset(gfx, "Ultrawide HUD Mode", s.ultrawideHud == 1 ? "Centered HUD" : "Edge HUD");
+						SelectPreset(gfx, "Ultrawide HUD Mode", s.ultrawideHud == 1 ? "Centered HUD" : "Edge HUD", gfxChanged);
 					cemuLog_log(LogType::Force, "PCE: aspect ratio {} (setting {}), resolution {}x{}", kAspect[aspect], s.aspectRatio, res[ri].width, res[ri].height);
 					static const char* kShadow[] = {"Low", "Medium", "High", "Ultra"};
-					SelectPreset(gfx, "Shadows", kShadow[std::clamp(s.shadowPreset, 0, 3)]);
+					SelectPreset(gfx, "Shadows", kShadow[std::clamp(s.shadowPreset, 0, 3)], gfxChanged);
 					static const char* kShadowDist[] = {"Medium", "High", "Very High", "Ultra"};
-					SelectPreset(gfx, "Shadow Draw Distance", kShadowDist[std::clamp(s.shadowPreset, 0, 3)]);
+					SelectPreset(gfx, "Shadow Draw Distance", kShadowDist[std::clamp(s.shadowPreset, 0, 3)], gfxChanged);
 				}
 				static const char* kAA[] = {"None", "Normal FXAA", "NVIDIA FXAA"};
-				SelectPreset(gfx, "Anti-Aliasing", kAA[std::clamp(s.antiAliasing, 0, 2)]);
+				SelectPreset(gfx, "Anti-Aliasing", kAA[std::clamp(s.antiAliasing, 0, 2)], gfxChanged);
 			}
 			// FPS++: full dynamic game speed (physics corrected), user chosen limit
 			if (auto fps = FindPack("BreathOfTheWild/Mods/FPS++"))
 			{
 				fps->SetEnabled(true);
-				SelectPreset(fps, "Mode", "Normal Settings");
-				SelectPreset(fps, "Fence Type", "Performance Fence");
-				SelectPreset(fps, "Cutscene FPS Limit", "Automatically Limit");
-				SelectPreset(fps, "Frame Average", "8 Frames");
-				SelectPreset(fps, "Static Mode", "Disabled");
-				SelectPreset(fps, "Debug Options", "Disabled");
+				SelectPreset(fps, "Mode", "Normal Settings", fpsChanged);
+				SelectPreset(fps, "Fence Type", "Performance Fence", fpsChanged);
+				SelectPreset(fps, "Cutscene FPS Limit", "Automatically Limit", fpsChanged);
+				SelectPreset(fps, "Frame Average", "8 Frames", fpsChanged);
+				SelectPreset(fps, "Static Mode", "Disabled", fpsChanged);
+				SelectPreset(fps, "Debug Options", "Disabled", fpsChanged);
 				// with frame generation the limit counts the frames shown: the game runs at half of it (steady pacing too)
 				static const int kLimits[] = {20, 30, 45, 55, 60, 72, 75, 90, 120, 144, 165, 240}; // FPS++ presets
 				const int target = s.frameGeneration == 1 ? s.fpsLimit / 2 : s.fpsLimit;
@@ -542,8 +547,8 @@ blr
 				for (int v : kLimits)
 					if (target >= v)
 						limit = v;
-				SelectPreset(fps, "FPS Limit", fmt::format("{}FPS Limit", limit));
-				SelectPreset(fps, "Framerate Limit", fmt::format("{}FPS (", limit));
+				SelectPreset(fps, "FPS Limit", fmt::format("{}FPS Limit", limit), fpsChanged);
+				SelectPreset(fps, "Framerate Limit", fmt::format("{}FPS (", limit), fpsChanged);
 			}
 			if (auto pce = FindPack("BotWPCEdition"))
 				pce->SetEnabled(true);
@@ -693,12 +698,19 @@ blr
 	{
 		Settings s = GetSettings();
 		GetConfig().vsync = s.vsync ? 1 : 0;
-		SetPacksFromSettings(s, true);
+		bool fpsChanged = false, gfxChanged = false;
+		SetPacksFromSettings(s, true, &fpsChanged, &gfxChanged);
 		if (CafeSystem::IsTitleRunning())
 		{
-			for (const char* name : {"BreathOfTheWild/Mods/FPS++", "BreathOfTheWild/Graphics"})
+			if (fpsChanged)
 			{
-				auto gp = FindPack(name);
+				auto gp = FindPack("BreathOfTheWild/Mods/FPS++");
+				if (gp && gp->IsActivated() && !gp->RequiresRestart(false, true))
+					gp->Reload();
+			}
+			if (gfxChanged)
+			{
+				auto gp = FindPack("BreathOfTheWild/Graphics");
 				if (gp && gp->IsActivated() && !gp->RequiresRestart(false, true))
 					gp->Reload();
 			}

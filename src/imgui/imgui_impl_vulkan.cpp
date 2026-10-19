@@ -446,8 +446,7 @@ void ImGui_ImplVulkan_RenderDrawData(ImDrawData* draw_data, VkCommandBuffer comm
                     vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS, g_PipelineLayout, 0, 1, desc_set, 0, NULL);
 
                     // Draw
-                    //vkCmdDrawIndexed(command_buffer, pcmd->ElemCount, 1, pcmd->IdxOffset + global_idx_offset, pcmd->VtxOffset + global_vtx_offset, 0);
-                    vkCmdDrawIndexed(command_buffer, pcmd->ElemCount, 1, idx_offset, vtx_offset, 0);
+                    vkCmdDrawIndexed(command_buffer, pcmd->ElemCount, 1, idx_offset, pcmd->VtxOffset + vtx_offset, 0);
                 }
             }
 			idx_offset += pcmd->ElemCount;

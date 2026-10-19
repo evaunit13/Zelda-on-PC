@@ -158,6 +158,8 @@ namespace pce::UI
 	bool MapPointAt(const PointerSnapshot& ps, float normX, float normY, float& x, float& y);
 	// puts the map's cursor and the target it eases to on a map point (the map does not move); false if unknown
 	bool SetMapCursor(const PointerSnapshot& ps, float x, float y);
+	// centres the world map and its cursor on the given world position (wx, wz in metres)
+	bool SetMapWorldCenter(const PointerSnapshot& ps, float wx, float wz);
 	// page the pause menu opens on next time (0 inventory, 1 system, 2 adventure log); the game stores the page it was
 	// closed on and reads it back when the menu opens. False if the game's menu data is not available.
 	bool SetPauseMenuStartPage(int page);

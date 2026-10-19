@@ -1212,6 +1212,11 @@ namespace pce::Input
 		sPanelHover = hover;
 	}
 
+	bool PanelHover()
+	{
+		return sPanelHover.load();
+	}
+
 	void RequestSystemMenu()
 	{
 		sSystemMenuRequest = true;
@@ -1373,10 +1378,12 @@ namespace pce::Input
 		const Settings& s = fs.settings;
 		// CPU thread pinning (once the emulation threads all exist, and whenever the setting changes)
 		{
-			static uint64 pinnedRev = ~0ull;
-			if (sDebug.frameCounter.load() > 120 && pinnedRev != fs.settingsRev)
+			static bool pinnedInit = false;
+			static bool lastPinState = false;
+			if (sDebug.frameCounter.load() > 120 && (!pinnedInit || lastPinState != s.cpuPinning))
 			{
-				pinnedRev = fs.settingsRev;
+				pinnedInit = true;
+				lastPinState = s.cpuPinning;
 				cemuLog_log(LogType::Force, "PCE: thread pinning {}: {}", s.cpuPinning ? "on" : "off", Profiler::PinEmulationThreads(s.cpuPinning));
 			}
 		}
@@ -1412,13 +1419,13 @@ namespace pce::Input
 			sPanel.x1 = ui.systemRect.x1;
 			sPanel.y1 = ui.systemRect.y1;
 		}
-		if (!ui.systemPanel || ui.dialog)
+		if ((!ui.systemPanel && !ui.map) || ui.dialog)
 		{
 			if (sEmbedFocus.exchange(false))
 				ClearKeyPresses();
 			sPanelHover = false;
 		}
-		UI::SetBoxCursorHidden(sEmbedFocus.load());
+		UI::SetBoxCursorHidden(sEmbedFocus.load() && ui.systemPanel);
 		Menus::FrameIO mio;
 		mio.frame = frameNo;
 		mio.focused = inputEnabled;
@@ -1444,17 +1451,19 @@ namespace pce::Input
 					act[i] = true;
 		}
 		{
-			const bool lmb = (inputEnabled && KeyDownNow(Key::MouseLeft)) || sDebug.overrideLmb.load();
-			const bool rmb = (inputEnabled && KeyDownNow(Key::MouseRight)) || sDebug.overrideRmb.load();
+			const bool panelBlock = ui.map && sPanelHover.load();
+			const bool focusOrMap = inputEnabled || (ui.map && (sFocused.load() || sDebug.forceFocus.load()) && !sOverlayOpen.load() && !sPopupOpen.load());
+			const bool lmb = !panelBlock && ((focusOrMap && KeyDownNow(Key::MouseLeft)) || sDebug.overrideLmb.load());
+			const bool rmb = !panelBlock && ((focusOrMap && KeyDownNow(Key::MouseRight)) || sDebug.overrideRmb.load());
 			mio.lmbDown = lmb;
 			mio.lmbPressed = lmb && !fs.prevLmb;
 			mio.lmbReleased = !lmb && fs.prevLmb;
 			mio.rmbPressed = rmb && !fs.prevRmb;
-			mio.mmbDown = inputEnabled && KeyDownNow(Key::MouseMiddle);
+			mio.mmbDown = !panelBlock && focusOrMap && KeyDownNow(Key::MouseMiddle);
 			fs.prevLmb = lmb;
 			fs.prevRmb = rmb;
 		}
-		mio.wheel = wheel;
+		mio.wheel = (ui.map && sPanelHover.load()) ? 0 : wheel;
 		Menus::Update(ui, mio);
 		sPointerMode = mio.pointerMode;
 		const bool gameMenu = mio.pointerMode || ui.scope || ui.cameraRune || ui.anyMenu || ui.inventory || ui.map;
