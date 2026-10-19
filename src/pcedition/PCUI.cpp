@@ -542,7 +542,7 @@ namespace pce::UI
 					*screenOut = sRootScreen[last];
 				return it->second;
 			}
-			return true;
+			return false;
 		}
 
 		// screen rectangle (normalized) from accumulated translate/scale (menus do not rotate)
