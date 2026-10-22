@@ -225,6 +225,16 @@ namespace pce::DevBridge
 					return CafeSystem::IsTitleRunning() ? "1" : "0";
 				if (c == "mapicons")
 					return MapIcons::DebugCommand(a);
+				if (c == "minimap")
+				{
+					const auto minfo = UI::GetMinimapInfo();
+					float px = 0, py = 0, pz = 0, camYaw = 0;
+					const bool hasPose = Input::GetPlayerPose(px, py, pz, camYaw);
+					return fmt::format("pose={} pos=({:.1f},{:.1f},{:.1f}) yaw={:.4f} minfo:[vis={} c=({:.4f},{:.4f}) r={:.4f} angle={:.4f} hasNorth={}]",
+						hasPose, px, py, pz, camYaw,
+						minfo.visible, minfo.normCenterX, minfo.normCenterY, minfo.normRadius,
+						minfo.compassAngle, minfo.hasNorthRotation);
+				}
 				if (c == "frame")
 					return std::to_string(dbg.frameCounter.load());
 				if (c == "stick" && a.size() >= 2)

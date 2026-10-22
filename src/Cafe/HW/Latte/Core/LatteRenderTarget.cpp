@@ -1105,7 +1105,7 @@ static void LatteFSR_OnFrameEnd(LatteTextureView* tvView)
 		s_fsr.wanted = pce::IsActive() && pce::GetSettings().frameGeneration == 1;
 		g_renderer->FSR_SetWanted(s_fsr.wanted);
 	}
-	const bool active = (s_fsr.wanted || s_fsr.devForce) && g_renderer->GetType() == RendererAPI::Vulkan && !(pce::IsActive() && pce::Overlay::IsGamePaused());
+	const bool active = (s_fsr.wanted || s_fsr.devForce) && g_renderer->GetType() == RendererAPI::Vulkan && !(pce::IsActive() && (pce::Overlay::IsGamePaused() || pce::Input::GameMenuOpen()));
 	if (active && s_fsr.cameraValid)
 	{
 		if (!s_fsr.snapshotDone)

@@ -119,6 +119,20 @@ namespace pce::UI
 	FocusResult RequestFocus(uint32 part, const Rect& area, uint32 frame);
 	// diagnostics: state of the game's cursor manager
 	std::string CursorInfo();
+	struct MinimapInfo
+	{
+		bool visible = false;
+		float normCenterX = 0.8984375f;
+		float normCenterY = 0.8333333f;
+		float normRadius = 0.109722f; // (79.0f / 720.0f)
+		float compassAngle = 0.0f;    // radians
+		bool hasNorthRotation = false;
+		float alpha = 1.0f;
+		uint32 paneAddr = 0;
+		char paneName[32] = {0};
+	};
+	MinimapInfo GetMinimapInfo();
+
 	// HUD action buttons drawn by the overlay in place of the hidden GamePad artwork (rect normalized, glyph = prompt code)
 	struct HudPrompt
 	{

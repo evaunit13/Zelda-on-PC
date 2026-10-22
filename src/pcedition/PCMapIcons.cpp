@@ -1847,37 +1847,7 @@ namespace pce::MapIcons
 				if ((fx < 0.120f && fy < 0.240f) || (fx < 0.080f && fy < 0.360f))
 					continue; // top-left
 
-				// 5. Never draw over the map cursor text info box ("Current Location / Stamp", "Ne'ez Yohma Shrine / Pushing Power / Travel")
-				if (ps.mapCtrl)
-				{
-					const uint32 curAddr = ps.mapCtrl - 0x648 + 0x3160;
-					if (curAddr && ValidRamPtr(curAddr, 16))
-					{
-						const float curMapX = memory_readFloat(curAddr);
-						const float curMapY = memory_readFloat(curAddr + 4);
-						const float curFx = ps.mapX + curMapX * ps.mapScaleX / 1280.0f;
-						const float curFy = ps.mapY - curMapY * ps.mapScaleY / 720.0f;
 
-						if (modalActive)
-						{
-							if (fx >= curFx - 0.250f && fx <= curFx + 0.045f && fy >= curFy - 0.065f && fy <= curFy + 0.085f)
-								continue;
-						}
-						else
-						{
-							if (curFx >= 0.32f)
-							{
-								if (fx >= curFx - 0.220f && fx <= curFx - 0.035f && fy >= curFy - 0.055f && fy <= curFy + 0.060f)
-									continue;
-							}
-							else
-							{
-								if (fx >= curFx + 0.035f && fx <= curFx + 0.220f && fy >= curFy - 0.055f && fy <= curFy + 0.060f)
-									continue;
-							}
-						}
-					}
-				}
 
 				float alpha = modalActive ? 0.35f : 0.95f;
 				if (m.claimed && s.mapDimClaimed)
@@ -2269,6 +2239,119 @@ namespace pce::MapIcons
 		}
 
 		return true;
+	}
+
+	void RenderMinimap(double now, float dt)
+	{
+		(void)now;
+		(void)dt;
+		const Settings s = GetSettings();
+		if (!s.mapEnabled || !s.mapMinimap)
+			return;
+
+		EnsureDatabaseLoaded();
+		if (!sDbReady.load())
+			return;
+
+		const uint32 frame = Input::GetDebug().frameCounter.load();
+		const auto& ui = UI::Get(frame);
+		if (!ui.hud || ui.anyMenu || ui.inventory || ui.map || ui.dialog || ui.title || ui.scope || ui.cameraRune)
+			return;
+
+		float px = 0, py = 0, pz = 0, camYaw = 0;
+		if (!Input::GetPlayerPose(px, py, pz, camYaw))
+			return;
+
+		const UI::MinimapInfo minfo = UI::GetMinimapInfo();
+		const float compassAngle = minfo.hasNorthRotation ? minfo.compassAngle : camYaw;
+
+		ImGuiIO& io = ImGui::GetIO();
+		const float W = io.DisplaySize.x, H = io.DisplaySize.y;
+		if (W <= 0.0f || H <= 0.0f)
+			return;
+
+		float picX = 0.0f, picY = 0.0f, picW = io.DisplaySize.x, picH = io.DisplaySize.y;
+		int px_area, py_area, pw_area, ph_area, ww_area, wh_area;
+		if (Graphics::GetPictureArea(px_area, py_area, pw_area, ph_area, ww_area, wh_area))
+		{
+			const float kx = io.DisplaySize.x / (float)ww_area, ky = io.DisplaySize.y / (float)wh_area;
+			picX = px_area * kx;
+			picY = py_area * ky;
+			picW = pw_area * kx;
+			picH = ph_area * ky;
+		}
+
+		if (!minfo.visible || minfo.normRadius <= 0.01f || minfo.alpha <= 0.05f)
+			return;
+
+		const float centerX = picX + minfo.normCenterX * picW;
+		const float centerY = picY + minfo.normCenterY * picH;
+		const float radiusPix = minfo.normRadius * picH;
+
+		if (radiusPix < 10.0f)
+			return;
+
+		RefreshLiveFlags(frame);
+
+		constexpr float kMinimapRangeMeters = 120.0f;
+		const float radarPixelRadius = radiusPix * 0.90f;
+		const float meterToPixel = radarPixelRadius / kMinimapRangeMeters;
+		const float iconRadius = std::clamp(5.5f * (picH / 720.0f), 4.0f, 9.0f);
+
+		const float cosA = cosf(compassAngle);
+		const float sinA = sinf(compassAngle);
+
+		ImDrawList* fgDl = ImGui::GetForegroundDrawList();
+		fgDl->PushClipRect(ImVec2(centerX - radiusPix * 1.05f, centerY - radiusPix * 1.05f),
+						   ImVec2(centerX + radiusPix * 1.05f, centerY + radiusPix * 1.05f), true);
+
+		std::lock_guard lock(sDbMutex);
+		for (const Marker& m : sMarkers)
+		{
+			if ((m.flags & Flag_HardMode) && !s.mapMasterMode)
+				continue;
+
+			const uint32 catMask = 1u << m.catBit;
+			if (!(s.mapCategories & catMask))
+				continue;
+
+			if (s.mapAutoHide && m.claimed)
+				continue;
+
+			const float relX = m.wx - px;
+			const float relZ = m.wz - pz;
+			if (fabsf(relX) > kMinimapRangeMeters || fabsf(relZ) > kMinimapRangeMeters)
+				continue;
+
+			const float rotX =  relX * cosA + relZ * sinA;
+			const float rotY = -relX * sinA + relZ * cosA;
+			const float distSq = rotX * rotX + rotY * rotY;
+			if (distSq > kMinimapRangeMeters * kMinimapRangeMeters)
+				continue;
+
+			const float dist = sqrtf(distSq);
+			const float pixelDist = dist * meterToPixel;
+
+			// Smooth edge fading near the rim (between 78% and 100% of radar radius)
+			float alpha = 1.0f;
+			const float fadeStart = radarPixelRadius * 0.78f;
+			if (pixelDist > fadeStart)
+				alpha = std::clamp((radarPixelRadius - pixelDist) / (radarPixelRadius - fadeStart), 0.0f, 1.0f);
+
+			alpha *= minfo.alpha;
+			if (alpha <= 0.02f)
+				continue;
+
+			if (!s.mapAutoHide && s.mapDimClaimed && m.claimed)
+				alpha *= 0.35f;
+
+			const float iconX = centerX + rotX * meterToPixel;
+			const float iconY = centerY + rotY * meterToPixel;
+
+			DrawMarkerIcon(fgDl, ImVec2(iconX, iconY), iconRadius, m.catBit, m.subKind, false, alpha);
+		}
+
+		fgDl->PopClipRect();
 	}
 
 	// ---------------------------------------------------------------- dev bridge command

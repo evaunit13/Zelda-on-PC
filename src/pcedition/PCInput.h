@@ -75,6 +75,9 @@ namespace pce
 		bool IsTiltActive();
 		void SetTiltActive(bool active);
 
+		// player world position and camera yaw (radians, 0 = North, +PI/2 = East)
+		bool GetPlayerPose(float& px, float& py, float& pz, float& camYaw);
+
 		// diagnostics (dev bridge)
 		struct Debug
 		{

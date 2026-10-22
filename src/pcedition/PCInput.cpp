@@ -26,6 +26,7 @@ namespace pce::Input
 {
 	namespace
 	{
+		bool KeyDownNow(Key k);
 		enum : uint32
 		{
 			VPAD_A = 0x8000,
@@ -113,10 +114,13 @@ namespace pce::Input
 		{
 			for (auto& k : sKeyDown)
 				k.store(false);
+			ClearKeyPresses();
 		}
 
 		void PushPress(Key k)
 		{
+			if (k == Key::Tab && (KeyDownNow(Key::LAlt) || KeyDownNow(Key::RAlt)))
+				return;
 			std::lock_guard lock(sPressMutex);
 			if (sPresses.size() > 64)
 				sPresses.pop_front();
@@ -186,8 +190,8 @@ namespace pce::Input
 			{
 				sFocused = focused;
 				LogFocusChange(focused);
-				if (!focused)
-					ReleaseAllKeys();
+				ReleaseAllKeys();
+				ClearKeyPresses();
 			}
 			if (!focused)
 				return;
@@ -542,6 +546,7 @@ namespace pce::Input
 		// game limits the pitch to -40..60. The negligible stick deflection of the direct camera keeps the camera from
 		// swinging back behind the horse, as a touch of the stick does (+0x28: time left of manual control).
 		std::atomic<uint32> sHorseCamFrame{0xF0000000};
+		std::atomic<uint32> sCycleCamFrame{0xF0000000};
 
 		// turns the eye of a camera's pose ([[camera+0x10]]) around its look-at point by the mouse rotation (degrees,
 		// right / up positive), the pitch of the eye kept within the limits
@@ -570,6 +575,18 @@ namespace pce::Input
 			const uint32 cam = hCPU->gpr[3];
 			sHorseCamFrame = sDebug.frameCounter.load();
 			sCamTickFrame = sDebug.frameCounter.load();
+			const double yaw = TakePending(sPendingYaw, sYawAge);
+			const double pitch = TakePending(sPendingPitch, sPitchAge);
+			TurnEye(cam, yaw, pitch, -40.0, 60.0);
+			hCPU->instructionPointer = hCPU->spr.LR;
+		}
+
+		void HLE_CycleCamTick(PPCInterpreter_t* hCPU)
+		{
+			const uint32 cam = hCPU->gpr[3];
+			sCycleCamFrame = sDebug.frameCounter.load();
+			sCamTickFrame = sDebug.frameCounter.load();
+			sDebug.cameraObject = cam;
 			const double yaw = TakePending(sPendingYaw, sYawAge);
 			const double pitch = TakePending(sPendingPitch, sPitchAge);
 			TurnEye(cam, yaw, pitch, -40.0, 60.0);
@@ -933,11 +950,15 @@ namespace pce::Input
 		// a key as the game sees it: not while it is latched (held since the PC settings had it, see LatchHeldKeys)
 		bool KeyDownForGame(Key k)
 		{
+			if (k == Key::Tab && (KeyDownNow(Key::LAlt) || KeyDownNow(Key::RAlt)))
+				return false;
 			return KeyDownNow(k) && !sKeyLatched[(uint16)k & 0xFF].load();
 		}
 
 		bool ActionDown(const Settings& s, Action a)
 		{
+			if (a == Action::Inventory && (KeyDownNow(Key::LAlt) || KeyDownNow(Key::RAlt)))
+				return false;
 			const auto& b = s.bind(a);
 			return KeyDownForGame(b.keys[0]) || KeyDownForGame(b.keys[1]);
 		}
@@ -1093,6 +1114,7 @@ namespace pce::Input
 		osLib_addFunction("coreinit", "PCE_GlideTick", HLE_GlideTick);
 		osLib_addFunction("coreinit", "PCE_ClimbCamTick", HLE_ClimbCamTick);
 		osLib_addFunction("coreinit", "PCE_HorseCamTick", HLE_HorseCamTick);
+		osLib_addFunction("coreinit", "PCE_CycleCamTick", HLE_CycleCamTick);
 		osLib_addFunction("coreinit", "PCE_TalkCamTick", HLE_TalkCamTick);
 		osLib_addFunction("coreinit", "PCE_MagnetTick", HLE_MagnetTick);
 		osLib_addFunction("coreinit", "PCE_MagnetCamTick", HLE_MagnetCamTick);
@@ -1267,6 +1289,32 @@ namespace pce::Input
 		sFS.repeatPulse = pulseMs;
 	}
 
+	bool GetPlayerPose(float& px, float& py, float& pz, float& camYaw)
+	{
+		const uint32 cam = sDebug.cameraObject.load();
+		if (!cam || !memory_isAddressRangeAccessible(cam + 0x10, 4))
+			return false;
+		const uint32 holder = memory_readU32(cam + 0x10);
+		if (!holder || !memory_isAddressRangeAccessible(holder, 4))
+			return false;
+		const uint32 pose = memory_readU32(holder);
+		if (!pose || !memory_isAddressRangeAccessible(pose + 0x550, 0x290))
+			return false;
+		px = memory_readFloat(pose + 0x7D4);
+		py = memory_readFloat(pose + 0x7D8);
+		pz = memory_readFloat(pose + 0x7DC);
+		const float ex = memory_readFloat(pose + 0x550);
+		const float ez = memory_readFloat(pose + 0x558);
+		const float ax = memory_readFloat(pose + 0x55C);
+		const float az = memory_readFloat(pose + 0x564);
+		const float dx = ax - ex;
+		const float dz = az - ez;
+		if (dx == 0.0f && dz == 0.0f)
+			return false;
+		camYaw = atan2f(dx, -dz);
+		return true;
+	}
+
 	Debug& GetDebug()
 	{
 		return sDebug;
@@ -1301,9 +1349,9 @@ namespace pce::Input
 	std::string CameraAges()
 	{
 		const uint32 f = sDebug.frameCounter.load();
-		return fmt::format("cam {} aim {} scope {} glide {} climbcam {} talkcam {} magnet {} horsecam {} runecam {} lockcam {} surfcam {} sealcam {} fallcam {}", f - sCamTickFrame.load(),
+		return fmt::format("cam {} aim {} scope {} glide {} climbcam {} talkcam {} magnet {} horsecam {} cyclecam {} runecam {} lockcam {} surfcam {} sealcam {} fallcam {}", f - sCamTickFrame.load(),
 						   f - sAimTickFrame.load(), f - sScopeTickFrame.load(), f - sGlideTickFrame.load(), f - sClimbCamFrame.load(),
-						   f - sTalkCamFrame.load(), f - sMagnetFrame.load(), f - sHorseCamFrame.load(), f - sRuneCamFrame.load(),
+						   f - sTalkCamFrame.load(), f - sMagnetFrame.load(), f - sHorseCamFrame.load(), f - sCycleCamFrame.load(), f - sRuneCamFrame.load(),
 						   f - sLockCamFrame.load(), f - sSurfCamFrame.load(), f - sSealCamFrame.load(), f - sFallCamFrame.load());
 	}
 
@@ -1619,22 +1667,25 @@ namespace pce::Input
 
 		uint32 hold = 0;
 		// ---- buttons ----
-		if (down(Action::Sprint) || down(Action::Back)) hold |= VPAD_B;
-		if (down(Action::Jump)) hold |= VPAD_X;
-		if (down(Action::Crouch)) hold |= VPAD_STICK_L;
-		if (down(Action::Attack)) hold |= VPAD_Y;
-		if (down(Action::Interact) || down(Action::Confirm)) hold |= VPAD_A;
-		if (down(Action::Bow)) hold |= VPAD_ZR;
-		if (down(Action::Target)) hold |= VPAD_ZL;
-		if (down(Action::UseRune)) hold |= VPAD_L;
-		if (down(Action::Throw)) hold |= VPAD_R;
-		if (down(Action::Scope)) hold |= VPAD_STICK_R;
-		if (down(Action::Whistle) || down(Action::MenuDown)) hold |= VPAD_DOWN;
-		if (down(Action::MenuUp)) hold |= VPAD_UP;
-		if (down(Action::MenuLeft)) hold |= VPAD_LEFT;
-		if (down(Action::MenuRight)) hold |= VPAD_RIGHT;
-		if (down(Action::Inventory)) hold |= VPAD_PLUS;
-		if (down(Action::Map)) hold |= VPAD_MINUS;
+		if (inputEnabled || sDebug.overrideButtons.load() || sDebug.overrideKeysAction.load() || sDebug.overrideMouse.load())
+		{
+			if (down(Action::Sprint) || down(Action::Back)) hold |= VPAD_B;
+			if (down(Action::Jump)) hold |= VPAD_X;
+			if (down(Action::Crouch)) hold |= VPAD_STICK_L;
+			if (down(Action::Attack)) hold |= VPAD_Y;
+			if (down(Action::Interact) || down(Action::Confirm)) hold |= VPAD_A;
+			if (down(Action::Bow)) hold |= VPAD_ZR;
+			if (down(Action::Target)) hold |= VPAD_ZL;
+			if (down(Action::UseRune)) hold |= VPAD_L;
+			if (down(Action::Throw)) hold |= VPAD_R;
+			if (down(Action::Scope)) hold |= VPAD_STICK_R;
+			if (down(Action::Whistle) || down(Action::MenuDown)) hold |= VPAD_DOWN;
+			if (down(Action::MenuUp)) hold |= VPAD_UP;
+			if (down(Action::MenuLeft)) hold |= VPAD_LEFT;
+			if (down(Action::MenuRight)) hold |= VPAD_RIGHT;
+			if (down(Action::Inventory)) hold |= VPAD_PLUS;
+			if (down(Action::Map)) hold |= VPAD_MINUS;
+		}
 		hold |= sDebug.overrideButtons.load();
 		hold |= mio.holdAdd;
 		if (sPressFrames.load() > 0)

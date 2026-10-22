@@ -497,6 +497,14 @@ namespace pce::UI
 			return (memory_readU32(obj + 0x94) & 0x300) != 0;
 		}
 
+		bool ScreenVisible(const std::string& name)
+		{
+			auto it = sScreens.find(name);
+			if (it == sScreens.end() || !ValidPtr(it->second, 0x200))
+				return false;
+			return (memory_readU32(it->second + 0x94) & 0x200) != 0;
+		}
+
 		void RebuildRoots()
 		{
 			sRootShown.clear();
@@ -846,13 +854,7 @@ namespace pce::UI
 			}
 		}
 
-		bool ScreenVisible(const std::string& name)
-		{
-			auto it = sScreens.find(name);
-			if (it == sScreens.end() || !ValidPtr(it->second, 0x200))
-				return false;
-			return (memory_readU32(it->second + 0x94) & 0x200) != 0;
-		}
+
 
 		// HUD action diamond (DoCommand_00): the button circles are textures, so the controller artwork is hidden and
 		// the overlay draws the PC key at the same place (high resolution, follows bindings and context live).
@@ -1647,6 +1649,103 @@ namespace pce::UI
 	{
 		std::lock_guard lock(sTipMutex);
 		return sTipKeys;
+	}
+
+	MinimapInfo GetMinimapInfo()
+	{
+		std::lock_guard lock(sMutex);
+		MinimapInfo info;
+
+		// Default 16:9 positioning in 1280x720 layout space: center at (1150, 600), radius 79
+		info.normCenterX = 1150.0f / kLayoutW;
+		info.normCenterY = 600.0f / kLayoutH;
+		info.normRadius = 79.0f / kLayoutH;
+
+		uint32 iconAreaPane = 0;
+		uint32 northPane = 0;
+		uint32 rotatePane = 0;
+		uint32 miniLinePane = 0;
+
+		auto searchRoot = [&](const std::string& scrName) {
+			auto it = sScreens.find(scrName);
+			if (it == sScreens.end() || !ValidPtr(it->second, 0x40))
+				return;
+			const uint32 lyt = memory_readU32(it->second + 0x18);
+			if (!ValidPtr(lyt, 0x10))
+				return;
+			const uint32 root = memory_readU32(lyt + 0x0C);
+			if (!root || !PaneOk(root))
+				return;
+
+			std::function<void(uint32, int)> walk = [&](uint32 pane, int depth) {
+				if (depth > 20 || !PaneOk(pane))
+					return;
+				const std::string n = ReadName(pane);
+				if (n == "N_IconArea_00")
+					iconAreaPane = pane;
+				else if (n == "Pa_North_00")
+					northPane = pane;
+				else if (n == "N_Rotate_00" && !rotatePane)
+					rotatePane = pane;
+				else if (n == "N_MiniMapLine_00")
+					miniLinePane = pane;
+
+				if (iconAreaPane && northPane && rotatePane)
+					return;
+
+				const uint32 head = pane + kChildHead;
+				uint32 node = memory_readU32(head);
+				for (int i = 0; i < 256 && node && node != head; i++)
+				{
+					if (!PaneOk(node))
+						break;
+					walk(node, depth + 1);
+					node = memory_readU32(node + kNext);
+				}
+			};
+			walk(root, 0);
+		};
+
+		searchRoot("AppMap_00");
+
+		const uint32 geomPane = iconAreaPane ? iconAreaPane : (northPane ? northPane : miniLinePane);
+		if (geomPane && PaneOk(geomPane))
+		{
+			const float effAlpha = AlphaChain(geomPane, false);
+			if (effAlpha > 0.05f)
+			{
+				Rect r{};
+				if (PaneRectImpl(geomPane, r))
+				{
+					info.visible = true;
+					info.normCenterX = r.cx();
+					info.normCenterY = r.cy();
+					info.normRadius = (r.y1 - r.y0) * 0.5f;
+					info.alpha = effAlpha;
+				}
+			}
+		}
+
+		if (rotatePane && PaneOk(rotatePane))
+		{
+			const float rotDeg = RF(rotatePane + 0x30);
+			info.compassAngle = rotDeg * (3.14159265358979323846f / 180.0f);
+			info.hasNorthRotation = true;
+		}
+		else if (northPane && PaneOk(northPane))
+		{
+			const float rotDeg = RF(northPane + 0x30);
+			info.compassAngle = rotDeg * (3.14159265358979323846f / 180.0f);
+			info.hasNorthRotation = true;
+		}
+
+		// Hide during screen transitions / loading screens
+		if (sFadeNow.load() > 0.05f || FadeAmount() > 0.05f || ScreenVisible("LoadingWeapon_00") || ScreenVisible("LoadSaveIcon_00"))
+		{
+			info.visible = false;
+		}
+
+		return info;
 	}
 
 	std::vector<HudPrompt> GetHudPrompts()

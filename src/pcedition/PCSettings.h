@@ -147,6 +147,7 @@ namespace pce
 		// interactive map (Sheikah Slate map overlay)
 		bool mapEnabled = true;             // master toggle: completely enable or disable the interactive map
 		bool mapOverlay = true;             // show the interactive map overlay on the world map
+		bool mapMinimap = true;             // show nearby interactive map markers on the HUD minimap compass
 		bool mapPanelOpen = true;           // filter & search panel expanded on the map screen
 		bool mapAutoHide = true;            // auto-hide claimed chests, completed shrines, activated towers, collected koroks
 		bool mapDimClaimed = false;         // when auto-hide is off, dim claimed markers instead of showing at full opacity

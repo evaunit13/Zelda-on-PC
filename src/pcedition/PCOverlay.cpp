@@ -422,6 +422,8 @@ namespace pce::Overlay
 										 "Completely enable or disable the interactive map and all its UI on the Sheikah Slate world map. (Shortcut: H on map)"));
 				p.items.push_back(toggle("Interactive Map Overlay", &sEdit.mapOverlay,
 										 "Shows interactive markers, item search and category filters directly on the Sheikah Slate world map."));
+				p.items.push_back(toggle("Minimap Markers", &sEdit.mapMinimap,
+										 "Shows nearby interactive map markers directly on the HUD minimap compass during gameplay."));
 				p.items.push_back(toggle("Map: Auto-Hide Claimed", &sEdit.mapAutoHide,
 										 "Automatically hides opened treasure chests, completed shrines, activated towers and collected Korok seeds."));
 				p.items.push_back(header("amiibo"));
@@ -1457,6 +1459,10 @@ namespace pce::Overlay
 			dl->AddLine(ImVec2(area.Min.x + fs, helpY - fs * 0.2f), ImVec2(area.Max.x - fs, helpY - fs * 0.2f), (kBorder & 0x00FFFFFF) | (60u << 24), 1.0f);
 			if (Input::EmbeddedFocus() || hover)
 				DrawHelp(dl, area.Min.x + fs * 1.2f, helpY + fs * 0.2f, area.GetWidth() - fs * 2.4f, fs, 1.0f, HelpText());
+			const std::string verText = std::string("PC Edition ") + kEditionVersion;
+			const float verY = Graphics::RestartPending() ? (area.Max.y - guideH - fs * 0.9f) : (area.Max.y - guideH + fs * 0.1f);
+			TextAligned(dl, sFonts.small, fs * 0.72f, ImVec2(area.Min.x + fs * 1.2f, verY), (kTextDim & 0x00FFFFFF) | (180u << 24),
+						verText, 0.0f);
 			if (Graphics::RestartPending())
 				TextAligned(dl, sFonts.small, fs * 0.72f, ImVec2(area.Min.x + fs * 1.2f, area.Max.y - guideH + fs * 0.1f), (kAccent & 0x00FFFFFF) | (230u << 24),
 							"Some changes apply after restarting", 0.0f);
@@ -1729,6 +1735,10 @@ namespace pce::Overlay
 			sMouseWasDown = ImGui::GetIO().MouseDown[0];
 			return;
 		}
+		if (!sOpen.load() && sFonts.item)
+		{
+			MapIcons::RenderMinimap(now, dt);
+		}
 
 		// global hotkey (works while playing): the pause menu on its System page (PC settings), or the PC menu
 		if (!sOpen.load())
@@ -1785,6 +1795,9 @@ namespace pce::Overlay
 		// header
 		SheikahEye(dl, ImVec2(p0.x + fs * 2.0f, p0.y + fs * 1.6f), fs * 0.9f, alpha(kAccent), (float)now);
 		dl->AddText(sFonts.title, fs * 1.45f, ImVec2(p0.x + fs * 3.6f, p0.y + fs * 0.85f), alpha(kText), "Settings");
+		const std::string verText = std::string("PC Edition ") + kEditionVersion;
+		const ImVec2 titleSize = sFonts.title->CalcTextSizeA(fs * 1.45f, FLT_MAX, 0.0f, "Settings");
+		dl->AddText(sFonts.small, fs * 0.75f, ImVec2(p0.x + fs * 3.9f + titleSize.x, p0.y + fs * 1.35f), alpha(kTextDim, 0.75f), verText.c_str());
 		DrawTabs(dl, p1.x - fs * 1.0f, p0.y + fs * 1.05f, fs, a, sOpen.load(), false, 0.0f);
 		const float headerBottom = p0.y + fs * 3.0f;
 		dl->AddLine(ImVec2(p0.x + fs, headerBottom), ImVec2(p1.x - fs, headerBottom), alpha(kBorder, 0.6f), 1.0f);
@@ -1803,6 +1816,7 @@ namespace pce::Overlay
 			TextAligned(dl, sFonts.small, fs * 0.72f, ImVec2(p1.x - fs * 1.6f, helpY + fs * 0.55f), alpha(kAccent, 0.9f), "Some changes apply after restarting", 1.0f);
 
 		// guide bar
+		TextAligned(dl, sFonts.small, fs * 0.72f, ImVec2(p0.x + fs * 1.6f, p1.y - fs * 1.5f), alpha(kTextDim, 0.65f), verText, 0.0f);
 		DrawGuide(dl, p1.x - fs * 1.2f, p1.y - fs * 1.7f, fs, a, ListGuide());
 		DrawToast(dl, W * 0.5f, p0.y - fs * 1.2f, fs, now);
 		DrawQuitConfirmation(dl, W, H, fs);

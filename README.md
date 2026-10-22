@@ -52,7 +52,7 @@ HUD**, so the interface is drawn on top at full sharpness instead of being inter
 
 - **1:1 mouse camera.** Raw input, no acceleration, no smoothing. The mouse does not pretend to be an analog stick: the
   game's camera code is patched to take the rotation directly, in the third person camera, with a target locked on, on
-  horseback, while aiming the bow, in the scope, in the camera rune, while climbing, in conversations, while shield
+  horseback, riding the Master Cycle Zero, while aiming the bow, in the scope, in the camera rune, while climbing, in conversations, while shield
   surfing, behind a sand seal and swimming up a waterfall.
 - **Every action rebindable**, two keys per action, with conflict highlighting.
 - **Weapons on the mouse wheel**, arrows while aiming. Hold `1` – `4` for the weapon, bow, shield and rune selectors.
@@ -77,7 +77,7 @@ the game's tutorial tips show your keys where the game has pictures of the GameP
 - **Inventory:** the selection follows the pointer, click to use an item, click the category icons and the page
   arrows, wheel to change category, drag to rotate Link.
 - **Map:** drag to pan, wheel to zoom, click a spot to move the cursor there and confirm (pins, fast travel).
-- **Interactive World Map:** an interactive companion built directly into the Sheikah Slate map (`M`). Shows over 20,000 markers for Shrines, Towers, Korok Seeds, Treasure Chests, Hinox, Stone Talus, Molduga, Lynels, and more. Filter categories, search for specific items, auto-hide collected items from your live save, and press `Enter` to center the map on any marker. Toggle on/off anytime with `H` or in `Esc` → **Game**.
+- **Interactive World Map & Minimap:** an interactive companion built directly into the Sheikah Slate map (`M`). Shows over 20,000 markers for Shrines, Towers, Korok Seeds, Treasure Chests, Hinox, Stone Talus, Molduga, Lynels, and more. Filter categories, search for specific items, auto-hide collected items from your live save, and press `Enter` to center the map on any marker, and track nearby markers directly on your HUD minimap compass. Toggle on/off anytime with `H` or in `Esc` → **Game**.
 - **Conversations:** click the answer.
 - **Adventure Log, title screen, save / load, system menus:** click what you want.
 

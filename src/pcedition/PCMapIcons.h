@@ -31,6 +31,9 @@ namespace pce::MapIcons
 	// Returns true while the map screen is active.
 	bool Render(double now, float dt);
 
+	// Renders nearby interactive map markers directly on the HUD minimap compass during normal gameplay.
+	void RenderMinimap(double now, float dt);
+
 	// Developer bridge diagnostics & automation command ("mapicons ...")
 	std::string DebugCommand(const std::vector<std::string>& args);
 }
