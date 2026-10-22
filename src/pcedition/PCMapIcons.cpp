@@ -1695,11 +1695,11 @@ namespace pce::MapIcons
 						UpdateSettings([](Settings& stg) { stg.mapEnabled = !stg.mapEnabled; });
 						break;
 					}
-					else if (*k == Key::Tab || (ctrl && *k == KeyChar('F')))
+					else if (s.mapEnabled && (*k == Key::Tab || (ctrl && *k == KeyChar('F'))))
 					{
-						if (!s.mapEnabled)
-							UpdateSettings([](Settings& stg) { stg.mapEnabled = true; stg.mapOverlay = true; stg.mapPanelOpen = true; });
-						else if (!s.mapOverlay || !s.mapPanelOpen)
+						// search: only while the Interactive Map is on. Turning it on stays on H / the PC menu, so a Tab
+						// bound to the game (e.g. open / close the map) never brings it back.
+						if (!s.mapOverlay || !s.mapPanelOpen)
 							UpdateSettings([](Settings& stg) { stg.mapOverlay = true; stg.mapPanelOpen = true; });
 						sSearchFocused = true;
 						Input::SetEmbeddedFocus(true);
