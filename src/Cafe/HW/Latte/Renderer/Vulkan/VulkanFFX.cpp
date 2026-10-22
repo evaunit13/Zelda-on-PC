@@ -237,12 +237,20 @@ void VulkanFFX::DestroyFrameGenContext()
 	ffxContext ctx = m_fgContext;
 	Destroy(m_fnDestroy)(&ctx, nullptr);
 	m_fgContext = nullptr;
+	m_generationOn = false;
 }
 
 bool VulkanFFX::PrepareFrame(VkPhysicalDevice physicalDevice, VkDevice device, VkExtent2D displaySize, VkFormat backbufferFormat, const FrameInfo& info)
 {
 	if (!m_swapchainContext)
 		return false;
+	if (m_recreatePending)
+	{
+		// generation was off (menu / pause): a context resumed after that flickers until the swapchain is recreated
+		DestroyFrameGenContext();
+		m_recreatePending = false;
+		m_recreateCount++;
+	}
 	if (!EnsureFrameGenContext(physicalDevice, device, displaySize, {info.renderWidth, info.renderHeight}, backbufferFormat, info.hudlessFormat))
 		return false;
 	if (info.reset)
@@ -272,6 +280,7 @@ bool VulkanFFX::PrepareFrame(VkPhysicalDevice physicalDevice, VkDevice device, V
 		cemuLog_logOnce(LogType::Force, "FSR: configure failed ({})", r);
 		return false;
 	}
+	m_generationOn = true;
 
 	ffxDispatchDescFrameGenerationPrepareCameraInfo cam{};
 	cam.header.type = FFX_API_DISPATCH_DESC_TYPE_FRAMEGENERATION_PREPARE_CAMERAINFO;
@@ -309,6 +318,8 @@ void VulkanFFX::DisableGeneration()
 {
 	if (!m_fgContext || !m_swapchainContext)
 		return;
+	if (!m_generationOn)
+		return;
 	ffxConfigureDescFrameGeneration cfg{};
 	cfg.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;
 	cfg.swapChain = m_swapchain;
@@ -317,4 +328,11 @@ void VulkanFFX::DisableGeneration()
 	ffxContext ctx = m_fgContext;
 	Configure(m_fnConfigure)(&ctx, &cfg.header);
 	m_resetPending = true;
+	m_generationOn = false;
+	m_recreatePending = true;
+}
+
+uint32 PCE_FsrRecreateCount() // dev bridge: fsrrecreate
+{
+	return VulkanFFX::Get().RecreateCount();
 }

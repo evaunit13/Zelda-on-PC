@@ -34,6 +34,7 @@ void LatteFrameGen_GetStats(float& baseFps, float& shownFps, bool& generating); 
 void LatteFrameGen_GetPacing(double& meanMs, double& stdMs, double& p95Ms);
 void LatteFrameTrace_Request(const std::string& path);
 std::string LatteFSR_Command(const std::vector<std::string>& a);
+uint32 PCE_FsrRecreateCount();
 
 namespace pce::DevBridge
 {
@@ -520,6 +521,8 @@ namespace pce::DevBridge
 					Graphics::ApplyLive(); // FPS++ limit follows frame generation
 					return "ok";
 				}
+				if (c == "fsrrecreate")
+					return std::to_string(PCE_FsrRecreateCount());
 				if (c == "fsr")
 					return LatteFSR_Command(a);
 				if (c == "frametrace" && a.size() > 1)

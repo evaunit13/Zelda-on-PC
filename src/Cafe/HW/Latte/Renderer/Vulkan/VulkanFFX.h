@@ -61,6 +61,7 @@ public:
 	bool PrepareFrame(VkPhysicalDevice physicalDevice, VkDevice device, VkExtent2D displaySize, VkFormat backbufferFormat, const FrameInfo& info);
 	// present without frame generation (paused, menus without game frames...)
 	void DisableGeneration();
+	uint32 RecreateCount() const { return m_recreateCount; }
 
 private:
 	bool EnsureFrameGenContext(VkPhysicalDevice physicalDevice, VkDevice device, VkExtent2D displaySize, VkExtent2D renderSize, VkFormat backbufferFormat, VkFormat hudlessFormat);
@@ -89,4 +90,7 @@ private:
 	VkFormat m_fgBackbuffer = VK_FORMAT_UNDEFINED, m_fgHudless = VK_FORMAT_UNDEFINED;
 	uint64 m_frameID = 0;
 	bool m_resetPending = true;
+	bool m_generationOn = false;      // frame generation was enabled by the last Configure
+	bool m_recreatePending = false;   // generation was disabled: start the next one on a fresh context
+	uint32 m_recreateCount = 0;       // dev: how often that happened
 };
